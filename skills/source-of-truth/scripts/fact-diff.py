@@ -154,13 +154,15 @@ def skill_corpus(target: Path) -> str:
 def present(corpus: str, value: str, kind: str) -> bool:
     needle = re.escape(norm(value))
     if kind == "path":
-        return re.search(rf"(?<![\w./-]){needle}(?![\w./-])", corpus) is not None
+        return re.search(
+            rf"(?<![\w./~-]){needle}(?![\w/_-])(?!\.[\w])", corpus
+        ) is not None
     if kind == "host":
         return re.search(rf"(?<![\w.-]){needle}(?![\w-])(?!\.[\w])", corpus) is not None
     if kind == "env":
         return re.search(rf"(?<!\w){needle}=", corpus) is not None
     if kind == "port":
-        return re.search(rf"(?<![\w.]){needle}(?![\w.])", corpus) is not None
+        return re.search(rf"(?<!\d){needle}(?!\d)", corpus) is not None
     if kind == "command":
         return re.search(rf"(?<!\w){needle}", corpus) is not None
     return re.search(rf"(?<!\w){needle}(?!\w)", corpus) is not None
