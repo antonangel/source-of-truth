@@ -3,14 +3,9 @@ name: source-of-truth
 description: "Use when docs need auditing, consolidating, or cleanup: two docs disagree, a doc restates config or code, a runbook is duplicated by a skill, or an authority doc omits a live subsystem."
 version: 1.0.0
 license: MIT
-author: Hermes
-metadata:
-  hermes:
-    tags: [docs, doctrine, adr, glossary, consolidation, source-of-truth]
-    related_skills: [writing-for-agents, repo-workflow, skill-library-maintenance]
 ---
 
-# Docs Doctrine
+# Source of Truth
 
 A doc is a **cache**, not a source. It earns its load when the lookup is expensive: a decision's
 rationale, a domain word, a pointer to the right file. Everything derivable must be **derived**,
