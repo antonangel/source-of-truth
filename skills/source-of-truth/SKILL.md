@@ -3,7 +3,7 @@ name: source-of-truth
 description: "Use when docs duplicate code, skills, or each other."
 version: 1.0.0
 license: MIT
-author: Atlas
+author: Hermes
 metadata:
   hermes:
     tags: [docs, doctrine, adr, glossary, consolidation, source-of-truth]
