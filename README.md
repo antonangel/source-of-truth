@@ -40,12 +40,14 @@ verbatim → stub → verify. The doc's path survives as a pointer, so every inb
 python3 skills/source-of-truth/scripts/fact-diff.py docs/backup.md ~/.claude/skills/backup-ops
 ```
 
-Lists the paths, hosts, ids and command lines the doc holds that the skill does not.
-**Exit 0** = safe to replace the doc with a pointer. **Exit 1** = it is not redundant, it is unmigrated.
+Lists the paths, hosts, ids, env vars, ports and command lines the doc holds that the skill does not.
+**Exit 0** = no missing facts detected — necessary, not sufficient, because the script compares facts
+and not usefulness. **Exit 1** = the doc is not redundant; it is unmigrated.
 
-This exists because text similarity lies. In the repo this was extracted from, genuinely duplicate
-doc/skill pairs shared **under 10%** of their tokens — a similarity search would have called them
-unrelated and a naive cleanup would have deleted 20 working commands.
+This exists because text similarity misled us once. In the single repo this was extracted from (n=1),
+genuinely duplicate doc/skill pairs shared **under 10%** of their tokens — a similarity search would
+have called them unrelated, and a naive cleanup would have deleted 20 working commands. Treat overlap
+as a hint for finding candidates, never as a verdict.
 
 ## Why the deletion-first instinct is wrong
 

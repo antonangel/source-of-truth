@@ -57,11 +57,13 @@ agent-run repo, because both are hand-maintained and only one is loaded.
 
 1. **Survey, don't sample.** Count docs, their inbound references, and their length. A doc with zero
    inbound links is not automatically dead; it may be a record.
-2. **Pair by topic, never by text similarity.** Measured overlap between genuinely duplicate doc/skill
-   pairs tops out around 10% — they are paraphrases, not copies. Similarity scores will tell you the
-   wrong thing.
-3. **Fact-diff the pair.** `scripts/fact-diff.py <doc> <skill>` lists the tokens and commands the
-   skill does not contain. Zero missing is the only safe-to-stub signal.
+2. **Pair by topic, then confirm with a fact-diff.** In the single repo where this was measured (n=1),
+   genuinely duplicate pairs shared under 10% of their tokens, so token overlap is a weak hint at
+   best. Use it to generate candidates, never to decide: the pair is real when it describes the same
+   job and the fact-diff shows what the skill lacks.
+3. **Fact-diff the pair.** `scripts/fact-diff.py <doc> <skill>` lists the facts the skill does not
+   contain. Zero missing is necessary, not sufficient: the script compares facts, not usefulness, so
+   read the pair before you stub.
 4. **Migrate verbatim.** Move the doc into the skill's `references/` unchanged. Do not condense: a
    summary silently deletes the working command, the exact path, the parameter that mattered.
 5. **Stub the doc.** Ten lines: canonical skill, reference path, one line on what it holds, and "do
@@ -87,10 +89,19 @@ Run the check **after** a change, not as a pre-commit gate on a shared tree: a p
 working tree blocks an unrelated clean change behind someone else's dirt. Report severity honestly — a
 broken pointer is real; a coverage gap is information.
 
+## Scope
+
+This targets agent-run repos where procedures live in skills and an agent loads them on demand. It
+fits less well when documentation **is** the product (public docs, tutorials), when a procedure must
+stay readable in-repo for compliance or for humans working without an agent, and when nobody reads
+the skill library — there the prose carries the narrative, and duplication costs less than losing it.
+The doctrine is about where a fact lives, not about deleting prose for its own sake.
+
 ## Anti-patterns
 
-- **Deleting on similarity.** Semantically duplicate docs share few tokens. Text matching finds
-  copies and misses duplicates — the opposite of what you need.
+- **Deleting on similarity.** In the one measured repo, semantically duplicate docs shared under 10%
+  of their tokens: text matching found copies and missed duplicates, the opposite of what you need.
+  Treat the score as a hint, never as a decision.
 - **Condensing during a move.** The compression is where the procedure dies. Move text, then prune
   with evidence.
 - **Stubbing without a fact-diff.** A pointer to a skill that lacks the command is worse than the
