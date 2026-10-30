@@ -67,19 +67,25 @@ agent-run repo, because both are hand-maintained and only one is loaded.
 5. **Stub the doc.** Ten lines: canonical skill, reference path, one line on what it holds, and "do
    not add procedure here". Keeping the path alive preserves every inbound link; deleting the file
    breaks them and teaches readers to distrust links.
-6. **Verify, then log.** Rerun the doc lint: the finding count must not move. Confirm the path still
-   exists. Commit the doc and the skill in the same turn — they are one change.
+6. **Verify, then log.** Confirm the stub's target exists, then prove every inbound link still resolves:
+   rerun the link or docs check the repo already has, or `git grep` the old path and walk the hits by hand
+   when it has none. Commit the doc and the skill in the same turn — they are one change.
 
 ## Procedure: mechanize the rule
 
-A doctrine that depends on taste decays. Give it one check that fails.
+A doctrine that depends on taste decays. If the repo already has a docs check, add one assertion to it
+that fails; if it has none, these are the assertions worth writing, cheapest first:
 
-- Flag a doc whose class is undeclared, when its directory does not imply one.
-- Flag a `class: derived` doc that no generator produces and that is not marked generated.
-- Flag a pointer whose target path does not exist.
-- Run it **after** a change, not as a pre-commit gate on a shared tree: a pre-push check over a
-  working tree blocks an unrelated clean change behind someone else's dirt.
-- Be honest about severity. A class-coverage gap is `info`; a broken pointer is real.
+- **A pointer whose target path does not exist.** Highest signal per line: a broken stub is worse than
+  the duplicate it replaced, because it looks authoritative and cannot be followed.
+- **Two docs claiming the same fact.** A heading or frontmatter convention makes this tractable; without
+  one, a link-and-authority review at merge time is the honest fallback.
+- **A doc that restates a generated file.** Compare the doc against the generator's output, not against
+  its own prose.
+
+Run the check **after** a change, not as a pre-commit gate on a shared tree: a pre-push check over a
+working tree blocks an unrelated clean change behind someone else's dirt. Report severity honestly — a
+broken pointer is real; a coverage gap is information.
 
 ## Anti-patterns
 
