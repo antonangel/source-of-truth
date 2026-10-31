@@ -1,12 +1,12 @@
 # DNS and proxy runbook
 
-Pi-hole answers on 192.168.1.2 (pihole.lan). The LAN is 192.168.1.0/24 and the router is 192.168.1.1.
-The admin UI is at http://192.168.1.2:8080/admin.
+Pi-hole answers on 10.0.0.2 (pihole.example.com). The LAN is 10.0.0.0/24 and the router is 10.0.0.1.
+The admin UI is at http://10.0.0.2:8080/admin.
 
 After editing local records, restart DNS:
 
 ```bash
-cd /srv/stack/dns
+cd /opt/example/dns
 docker compose pull   # update images first
 docker compose up -d pihole
 docker exec pihole pihole restartdns

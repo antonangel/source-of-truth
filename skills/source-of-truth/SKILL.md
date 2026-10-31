@@ -24,12 +24,12 @@ everything else short and singular.
 
 ## Ground rules
 
-1. **Dry-run first.** Produce the plan (`references/audit-report-template.md`) and wait for a yes
+1. **Dry-run first.** Produce the plan (`references/sources-and-secrets.md`) and wait for a yes
    before moving or stubbing anything.
 2. **Never delete a doc.** A stub keeps its path, so every inbound link survives.
 3. **Secrets before moves.** Scrub a doc's secrets before copying it anywhere. Never print a
    secret's value; the script reports file and line only.
-4. **Break-glass stays readable off-host.** See `references/break-glass.md`.
+4. **Break-glass stays readable off-host.** See `references/sources-and-secrets.md`.
 5. **Stage files by name** (never a whole directory) and commit the doc and the skill together.
 
 ## Classify the fact, then place it
@@ -56,7 +56,7 @@ written, including claims that later became false. Annotate the top; never rewri
 | Agent memory | The user's preferences and standing instructions | Infra state that config can answer |
 | Stack README | One line of purpose and a pointer | Anything the compose file says |
 
-How to derive instead of hand-write: `references/homelab-sources.md`.
+How to derive instead of hand-write: `references/sources-and-secrets.md`.
 
 ## The four tests
 
@@ -118,9 +118,8 @@ doctrine is about where a fact lives, not about deleting prose.
 
 ## References
 
-- `references/homelab-sources.md`: where each kind of homelab fact is generated from.
-- `references/secrets.md`: scrub-first procedure and what the scanner catches.
-- `references/break-glass.md`: recovery docs that must outlive the agent host.
-- `references/audit-report-template.md`: the plan format for step 6.
-- `references/before-after-homelab.md`: one invented consolidation, with real script output.
-- `references/consolidation-walkthrough.md`: a real 14-pair run, with numbers.
+- `references/sources-and-secrets.md`: where each kind of homelab fact is generated from, the
+  scrub-first procedure and what the scanner catches, recovery docs that must outlive the agent
+  host, and the plan format for step 6.
+- `references/examples.md`: one invented consolidation with real script output, and a real
+  14-pair run with numbers.

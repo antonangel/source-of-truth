@@ -12,11 +12,10 @@ which copy is current, so the agent picks one and builds on it.
   ([classes and layer map](skills/source-of-truth/SKILL.md#classify-the-fact-then-place-it)).
 - Runs an audit that ends in a written plan you approve before anything moves
   ([workflow](skills/source-of-truth/SKILL.md#audit-workflow)).
-- Checks nothing is lost: `fact-diff.py` lists what a doc states that its replacement does not.
+- Checks nothing is lost: `sot.py diff` lists what a doc states that its replacement does not.
 - Catches drift from your config, such as a runbook that says 8080 where compose maps 8081.
 - Scrubs secrets before a doc is copied, and keeps recovery steps readable when the agent host is
-  down ([secrets](skills/source-of-truth/references/secrets.md),
-  [break-glass](skills/source-of-truth/references/break-glass.md)).
+  down ([sources and secrets](skills/source-of-truth/references/sources-and-secrets.md)).
 
 It never deletes a doc. The path survives as a pointer, so links keep working.
 
@@ -34,25 +33,27 @@ Check its documentation for the directory.
 
 ## Try it
 
-The repo bundles an invented homelab. From `tests/fixtures/homelab`:
+The repo bundles an invented homelab. From `tests/fixtures/example-stack`:
 
 ```bash
-python3 ../../../skills/source-of-truth/scripts/fact-diff.py docs/dns-runbook.md skills/network-ops
-python3 ../../../skills/source-of-truth/scripts/fact-diff.py docs/dns-runbook.md config --kinds=path,host,ip,port,env,id
+python3 ../../../skills/source-of-truth/scripts/sot.py diff docs/dns-runbook.md skills/network-ops
+python3 ../../../skills/source-of-truth/scripts/sot.py diff docs/dns-runbook.md config --kinds=path,host,ip,port,env,id
 ```
 
 The first shows what the doc holds that the skill lacks. The second finds the stale port. Full output
-and the migration that follows: [before and after](skills/source-of-truth/references/before-after-homelab.md).
+and the migration that follows: [examples](skills/source-of-truth/references/examples.md).
 
 ## Scripts
 
 Python 3.10+, standard library only.
 
-- `scripts/fact-diff.py <doc> <skill-or-config-dir> [--kinds=a,b]`: exit 0 when nothing is missing,
-  1 when facts are. Secret warnings go to stderr, by line, never with the value.
-  Fact kinds: `path`, `host`, `ip`, `port`, `env`, `id`, `command`.
-- `scripts/doc-inventory.py [repo]`: each doc with size, age, inbound references, fact counts and
-  possible secrets.
+- `scripts/sot.py inventory [repo]` (also `scripts/doc-inventory.py` shim): each doc with size,
+  age, inbound references, fact counts and possible secrets.
+- `scripts/sot.py diff <doc> <skill-or-config-dir> [--kinds=a,b]` (also `scripts/fact-diff.py`
+  shim): exit 0 when nothing is missing, 1 when facts are. Secret warnings go to stderr, by line,
+  never with the value.
+
+Fact kinds: `path`, `host`, `ip`, `port`, `env`, `id`, `command`.
 
 Run the tests with `python3 tests/run_tests.py`.
 

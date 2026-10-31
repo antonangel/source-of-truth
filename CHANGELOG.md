@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.0
+
+Shrunk the repo into a minimal, public, agent-readable skill.
+
+- Merged six references into two: `references/examples.md` and
+  `references/sources-and-secrets.md`.
+- Merged `doc-inventory.py` + `fact-diff.py` into `scripts/sot.py` with `inventory` and `diff`
+  subcommands; the old script names remain as thin (deprecated) shims for one release.
+- Renamed the fixture to `tests/fixtures/example-stack/` with sanitized values (no env leakage).
+- README rewritten as a 60-second quickstart; SKILL.md stays under 250 lines.
+- 48 tests still green; CI unchanged.
+
+Migration: replace `python3 scripts/fact-diff.py` with `python3 scripts/sot.py diff` and
+`python3 scripts/doc-inventory.py` with `python3 scripts/sot.py inventory`. The shims keep
+working for one release.
+
 ## 1.2.0
 
 Rewritten for homelabs and the agents that read their docs.

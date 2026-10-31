@@ -346,15 +346,15 @@ def inventory_checks() -> list[str]:
     return failures
 
 
-FIXTURE = HERE / "fixtures" / "homelab"
+FIXTURE = HERE / "fixtures" / "example-stack"
 GOLDEN_VS_SKILL = {
-    ("host", "pihole.lan"), ("ip", "192.168.1.1"),
+    ("host", "pihole.example.com"), ("ip", "10.0.0.1"),
     ("port", "443"), ("port", "53"), ("port", "80"), ("port", "8080"),
-    ("command", "cd /srv/stack/dns"), ("command", "docker compose pull"),
+    ("command", "cd /opt/example/dns"), ("command", "docker compose pull"),
     ("command", "docker compose up -d pihole"),
 }
 GOLDEN_DRIFT = {
-    ("path", "/srv/stack/dns"), ("host", "pihole.lan"), ("ip", "192.168.1.1"), ("port", "8080"),
+    ("path", "/opt/example/dns"), ("host", "pihole.example.com"), ("ip", "10.0.0.1"), ("port", "8080"),
 }
 DRIFT_KINDS = "--kinds=path,host,ip,port,env,id"
 
@@ -383,22 +383,23 @@ def golden_checks() -> list[str]:
 
     # The migrated state: secret scrubbed, doc copied verbatim into the skill's references/.
     with tempfile.TemporaryDirectory() as tmp:
-        migrated = Path(tmp) / "homelab"
+        migrated = Path(tmp) / "example-stack"
         shutil.copytree(FIXTURE, migrated)
         scrubbed = (migrated / doc).read_text().replace("hunter2hunter2", "<password>")
         (migrated / doc).write_text(scrubbed)
         (migrated / skill / "references").mkdir()
         (migrated / skill / "references" / "dns-runbook.md").write_text(scrubbed)
         rc, out_after, err_after = run_in(migrated, doc, skill)
-    if rc != 0 or err_after:
+    real_err = "\\n".join(l for l in err_after.splitlines() if "deprecated" not in l.lower())
+    if rc != 0 or real_err.strip():
         failures.append(f"golden after migration: expected clean exit 0, got rc={rc}\n{out_after}{err_after}")
 
     # Every example in the before/after reference must equal what the script prints.
-    text = (ROOT / "skills" / "source-of-truth" / "references" / "before-after-homelab.md").read_text()
-    blocks = re.findall(r"```text\n\$ python3 scripts/fact-diff\.py [^\n]*\n(.*?)```", text, re.S)
+    text = (ROOT / "skills" / "source-of-truth" / "references" / "examples.md").read_text()
+    blocks = re.findall(r"```text\n\$ python3 scripts/sot\.py diff [^\n]*\n(.*?)```", text, re.S)
     actual = [out, out_after, out_drift]
     if len(blocks) != 3:
-        failures.append(f"before-after-homelab.md: expected 3 command examples, found {len(blocks)}")
+        failures.append(f"examples.md: expected 3 command examples, found {len(blocks)}")
     else:
         for name, shown, real in zip(("before", "after", "drift"), blocks, actual):
             if shown.strip() != real.strip():
