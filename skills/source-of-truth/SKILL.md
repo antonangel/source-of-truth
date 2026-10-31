@@ -7,120 +7,120 @@ license: MIT
 
 # Source of Truth
 
-A doc is a **cache**, not a source. It earns its load when the lookup is expensive: a decision's
-rationale, a domain word, a pointer to the right file. Everything derivable must be **derived**,
-and everything procedural belongs in a **skill**, which is executable and fails at runtime.
+A homelab collects docs faster than it collects truth. The agent reads `AGENTS.md`, a memory file,
+a skill and a runbook that each state the same port. When they disagree it picks one, quietly, and
+builds on it. The fix is not fewer docs. It is **one home per fact**.
 
-The failure mode is not volume, it is **two copies that can disagree**. When they do, the agent picks
-one arbitrarily and quietly builds on the wrong one.
+A doc is a **cache**, not a source. Derive what can be derived, make procedures skills, and keep
+everything else short and singular.
 
-## When to Use
+## When to use
 
-- A doc and a skill describe the same procedure, or a doc restates config that already exists.
-- Two docs disagree, and you need to decide which one is real.
-- A doc pile is being audited, archived, or "cleaned up".
-- An authority doc omits a live subsystem, so readers conclude it is absent.
-- A repo has an ADR pile, a glossary, and a `docs/` tree that nobody has reconciled.
+- A runbook looks stale, or `AGENTS.md` / `CLAUDE.md` disagrees with the compose file or config.
+- A doc and a skill describe the same procedure.
+- Two docs state the same port, IP, path or command, so they can disagree.
+- Runbooks contain tokens, keys or passwords.
+- A running service appears in no doc, so readers conclude it does not exist.
+
+## Ground rules
+
+1. **Dry-run first.** Produce the plan (`references/audit-report-template.md`) and wait for a yes
+   before moving or stubbing anything.
+2. **Never delete a doc.** A stub keeps its path, so every inbound link survives.
+3. **Secrets before moves.** Scrub a doc's secrets before copying it anywhere. Never print a
+   secret's value; the script reports file and line only.
+4. **Break-glass stays readable off-host.** See `references/break-glass.md`.
+5. **Stage files by name** (never a whole directory) and commit the doc and the skill together.
 
 ## Classify the fact, then place it
 
-Every doc states one of five kinds of fact. The class decides its home.
+- **Derived**: restates config or live state (port tables, service inventories, IP lists). Generate
+  it or delete it. If nothing can generate it, it was a decision wearing a table.
+- **Decided**: why this and not the alternative. One ADR, linked, never restated.
+- **Vocabulary**: what a word means here. One glossary.
+- **Procedural**: how to do a thing. A **skill**, which loads on demand and fails visibly. Prose
+  drifts silently.
+- **Navigational**: where to look. `AGENTS.md`, a README. Every path must resolve.
 
-- **Derived** — restates code, config, or live state. Generate it or delete it. If no generator can
-  produce it, it was never derived: it is a decision wearing a table.
-- **Decided** — why this and not the alternative, and what it costs. One ADR. Never restated in a
-  second doc; link to it instead.
-- **Vocabulary** — what a word means here. One glossary. Two definitions of one term is the same bug
-  as two sources of truth, in miniature.
-- **Procedural** — how to do a thing. A **skill**, not prose. A skill loads on demand, is versioned
-  with the code, and a wrong step fails visibly. Prose drifts silently.
-- **Navigational** — where to look. `AGENTS.md`, a README, a router. Every path must resolve.
+Records (plans, audits, changelogs, incident notes) are **append-only history**. Leave them as
+written, including claims that later became false. Annotate the top; never rewrite.
 
-Records (plans, audits, changelogs, research) are a sixth case: they are **append-only history**.
-Leave them as written, including claims that later became false — annotate at the top, never rewrite.
+## Where each fact lives
 
-## The tests
+| Layer | Holds | Must not hold |
+|---|---|---|
+| Config (compose, Nix, Ansible, proxy, DNS) | Ports, IPs, paths, versions: the truth | Rationale prose |
+| `AGENTS.md` / `CLAUDE.md` | Where things live, hard rules, pointers to skills | Ports, IPs, command sequences |
+| Skills | Procedures, verifiers, `references/` | Decisions, vocabulary |
+| `docs/` | ADRs, glossary, append-only records | Procedures, restated config |
+| Agent memory | The user's preferences and standing instructions | Infra state that config can answer |
+| Stack README | One line of purpose and a pointer | Anything the compose file says |
 
-- **Deletion test.** Delete the doc. If the answer is recoverable by reading code or running a
-  command, it was derived. If the reason vanished with it, it was a decision.
-- **Drift test.** Could two copies disagree within a month? Then one must die, now.
-- **Fact-diff test.** Before replacing a doc with a pointer, extract its paths, ports, ids, and
-  command lines and check each against the target. Missing facts mean the doc is not redundant — it
-  is unmigrated.
-- **Silence test.** A subsystem the authority doc never mentions reads as **absent**. Silence is a
-  claim, and the expensive kind: nobody goes looking for what they believe is not there.
+How to derive instead of hand-write: `references/homelab-sources.md`.
 
-## Procedure: consolidate a doc into its skill
+## The four tests
 
-Run this when a doc and a skill describe the same procedure — the most common duplication in an
-agent-run repo, because both are hand-maintained and only one is loaded.
+- **Deletion**: delete the doc. Recoverable by reading config or running a command means it was
+  derived. If the reason vanished, it was a decision.
+- **Drift**: could two copies disagree within a month? Then one must go, now.
+- **Fact-diff**: before replacing a doc with a pointer, check that every path, host, IP, port, env
+  var, id and command it holds exists in the target. Missing facts mean the doc is unmigrated.
+- **Silence**: a subsystem the authority doc never mentions reads as absent. Silence is a claim.
 
-1. **Survey, don't sample.** Count docs, their inbound references, and their length. A doc with zero
-   inbound links is not automatically dead; it may be a record.
-2. **Pair by topic, then confirm with a fact-diff.** In the single repo where this was measured (n=1),
-   genuinely duplicate pairs shared under 10% of their tokens, so token overlap is a weak hint at
-   best. Use it to generate candidates, never to decide: the pair is real when it describes the same
-   job and the fact-diff shows what the skill lacks.
-3. **Fact-diff the pair.** `scripts/fact-diff.py <doc> <skill>` lists the facts the skill does not
-   contain. Zero missing is necessary, not sufficient: the script compares facts, not usefulness, so
-   read the pair before you stub.
-4. **Migrate verbatim.** Move the doc into the skill's `references/` unchanged. Do not condense: a
-   summary silently deletes the working command, the exact path, the parameter that mattered.
-5. **Stub the doc.** Ten lines: canonical skill, reference path, one line on what it holds, and "do
-   not add procedure here". Keeping the path alive preserves every inbound link; deleting the file
-   breaks them and teaches readers to distrust links.
-6. **Verify, then log.** Confirm the stub's target exists, then prove every inbound link still resolves:
-   rerun the link or docs check the repo already has, or `git grep` the old path and walk the hits by hand
-   when it has none. Commit the doc and the skill in the same turn — they are one change.
+## Audit workflow
 
-## Procedure: mechanize the rule
+1. **Inventory.** `python3 scripts/doc-inventory.py <repo>` lists each doc with size, age, inbound
+   references, fact counts and possible secrets. Survey everything; do not sample.
+2. **Classify** every doc: class, proper home, action. Leave records alone.
+3. **Secrets pass.** Any secret warning blocks that doc until it is scrubbed. Rotate anything that
+   was ever committed or synced.
+4. **Pair and fact-diff.** Pair docs with skills by topic, then run the fact-diff. Overlap scores
+   are a hint for finding candidates, never a verdict.
+5. **Drift check** against config (below).
+6. **Present the plan and wait for a yes.**
+7. **Migrate verbatim** (minus secrets) into the skill's `references/`, stub the doc, verify.
 
-A doctrine that depends on taste decays. If the repo already has a docs check, add one assertion to it
-that fails; if it has none, these are the assertions worth writing, cheapest first:
+Stub the doc in ten lines: canonical skill, reference path, one line on what it holds, "do not add
+procedure here". Verify the target exists, then `git grep` the old path and walk every hit. Never
+condense while moving: the summary deletes the command that mattered.
 
-- **A pointer whose target path does not exist.** Highest signal per line: a broken stub is worse than
-  the duplicate it replaced, because it looks authoritative and cannot be followed.
-- **Two docs claiming the same fact.** A heading or frontmatter convention makes this tractable; without
-  one, a link-and-authority review at merge time is the honest fallback.
-- **A doc that restates a generated file.** Compare the doc against the generator's output, not against
-  its own prose.
+## Fact-diff, two uses
 
-Run the check **after** a change, not as a pre-commit gate on a shared tree: a pre-push check over a
-working tree blocks an unrelated clean change behind someone else's dirt. Report severity honestly — a
-broken pointer is real; a coverage gap is information.
+```bash
+# Is the doc redundant with the skill? Exit 0 = nothing missing: necessary, not sufficient.
+python3 scripts/fact-diff.py docs/dns-runbook.md skills/network-ops
+
+# Has the doc drifted from the config? Commands never live in config, so skip them.
+python3 scripts/fact-diff.py docs/dns-runbook.md /srv/stack --kinds=path,host,ip,port,env,id
+```
+
+Exit 1 lists the missing facts. Secret warnings go to stderr; read both. In drift mode a missing
+fact is stale, or lives outside that directory: decide, do not auto-fix.
 
 ## Scope
 
-This targets agent-run repos where procedures live in skills and an agent loads them on demand. It
-fits less well when documentation **is** the product (public docs, tutorials), when a procedure must
-stay readable in-repo for compliance or for humans working without an agent, and when nobody reads
-the skill library — there the prose carries the narrative, and duplication costs less than losing it.
-The doctrine is about where a fact lives, not about deleting prose for its own sake.
+Built for homelabs and small infra repos where an agent loads skills on demand. It fits less well
+when documentation is the product, when a procedure must stay readable without any agent, or when
+nobody reads the skill library: there duplication costs less than losing the narrative. The
+doctrine is about where a fact lives, not about deleting prose.
 
 ## Anti-patterns
 
-- **Deleting on similarity.** In the one measured repo, semantically duplicate docs shared under 10%
-  of their tokens: text matching found copies and missed duplicates, the opposite of what you need.
-  Treat the score as a hint, never as a decision.
-- **Condensing during a move.** The compression is where the procedure dies. Move text, then prune
-  with evidence.
+- **Deleting on similarity.** In the one repo where this was measured (n=1), true duplicate pairs
+  shared under 10% of their tokens. Treat the score as a hint.
+- **Condensing during a move.** The compression is where the procedure dies.
 - **Stubbing without a fact-diff.** A pointer to a skill that lacks the command is worse than the
   duplicate: it looks authoritative and cannot be followed.
-- **Two histories.** A raw log and a curated summary are fine only when the doc **declares** which is
-  which. Undeclared, they drift and each claims to be current.
-- **Restating the environment.** A doc that copies `package.json`, a compose file, or `--help` output
-  is a cache with no invalidation.
-- **A doc that names a command without the command that verifies it.** Either add the verifier or
-  demote the doc to a decision record.
+- **Two histories.** A raw log and a curated summary are fine only if the doc declares which is which.
+- **Restating the environment.** A doc that copies a compose file or `--help` output has no invalidation.
+- **A command without its verifier.** Add the check, or demote the doc to a decision record.
+- **Migrating a secret.** Verbatim does not apply to credentials.
 
-## Before you delete anything
+## References
 
-Run the deletion test on every candidate and expect it to fail. In practice almost no doc passes:
-repos are not full of junk, they are full of procedures that were never migrated. The honest outcome
-of a docs audit is usually **zero deletions and a pile of migrations**.
-
-## Going deeper
-
-- `scripts/fact-diff.py` — the migrate-before-stub check, run against any doc/skill pair.
-- `references/consolidation-walkthrough.md` — a worked case with real numbers: 14 pairs, what the
-  fact-diff caught, and the files where moving was the only safe option.
+- `references/homelab-sources.md`: where each kind of homelab fact is generated from.
+- `references/secrets.md`: scrub-first procedure and what the scanner catches.
+- `references/break-glass.md`: recovery docs that must outlive the agent host.
+- `references/audit-report-template.md`: the plan format for step 6.
+- `references/before-after-homelab.md`: one invented consolidation, with real script output.
+- `references/consolidation-walkthrough.md`: a real 14-pair run, with numbers.
