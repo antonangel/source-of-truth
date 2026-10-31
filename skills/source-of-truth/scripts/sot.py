@@ -48,6 +48,7 @@ Python 3.10+, standard library only.
 """
 
 
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -58,6 +59,7 @@ _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+from sotassets import OWNED, agents_block, ci_snippet
 from sotlib import (
     EXIT_CLEAN, EXIT_MISSING, EXIT_SECRET, EXIT_USAGE, KINDS, PROFILES,
     census, extract, find_ports, inbound_counts, is_pointer, is_record,
@@ -223,16 +225,107 @@ def inventory_main(argv: list[str]) -> int:
     return EXIT_CLEAN
 
 
+INIT_USAGE = "usage: sot.py init [repo-dir] [--print] [--force]"
+
+
+def parse_init_args(argv: list[str]):
+    args, do_print, force = [], False, False
+    for arg in argv[1:]:
+        if arg == "--print":
+            do_print = True
+        elif arg == "--force":
+            force = True
+        elif arg.startswith("--"):
+            return None
+        else:
+            args.append(arg)
+    if len(args) > 1:
+        return None
+    return (Path(args[0]) if args else Path(".")), do_print, force
+
+
+def _git(*args: str, cwd: Path) -> str | None:
+    proc = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def _script_ref(toplevel: Path) -> str:
+    """How the operator should invoke this script from the repository root.
+
+    Never a hardcoded install path (ADR 0002 §9): relative to the git root when the script lives
+    inside the repository, absolute when it does not.
+    """
+    script = Path(__file__).resolve()
+    try:
+        return script.relative_to(toplevel).as_posix()
+    except ValueError:
+        return str(script)
+
+
+def init_main(argv: list[str]) -> int:
+    parsed = parse_init_args(argv)
+    if parsed is None:
+        print(INIT_USAGE, file=sys.stderr)
+        return EXIT_USAGE
+    root, do_print, force = parsed
+    if not root.is_dir():
+        print(f"not a directory: {root}", file=sys.stderr)
+        return EXIT_USAGE
+    if _git("rev-parse", "--is-inside-work-tree", cwd=root) != "true":
+        print(f"not a git work tree: {root}", file=sys.stderr)
+        return EXIT_USAGE
+    top = _git("rev-parse", "--show-toplevel", cwd=root)
+    if not top:
+        print(f"not a git work tree: {root}", file=sys.stderr)
+        return EXIT_USAGE
+    ref = _script_ref(Path(top))
+
+    print(f"source-of-truth init — {root}")
+    print()
+    written = skipped = 0
+    for rel, body in OWNED:
+        path = root / rel
+        if path.exists() and not force:
+            print(f"{'skip (exists)':<18}{rel}")
+            skipped += 1
+        elif do_print:
+            print(f"{'would write':<18}{rel}")
+            written += 1
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+            print(f"{'write':<18}{rel}")
+            written += 1
+
+    print()
+    if do_print:
+        print(f"{written} would be written, {skipped} skipped (--print: nothing written)")
+    else:
+        print(f"{written} written, {skipped} skipped")
+    print()
+    print("paste this into AGENTS.md (this tool never edits it):")
+    print()
+    print(agents_block(ref))
+    print("paste this into your CI workflow (this tool never writes it):")
+    print()
+    print(ci_snippet(ref))
+    return EXIT_CLEAN
+
+
 USAGE = """usage:
+  sot.py init [repo-dir] [--print] [--force]
   sot.py inventory [repo-dir] [--top=N]
   sot.py diff <doc.md> <skill-dir | SKILL.md | config-dir> [--profile=skill|config]
               [--kinds=KINDS] [--all] [--quiet] [--force]
 
-One selected document and one selected target: report literal facts absent from the target.
-Exit codes: 0 no missing selected facts, 1 findings, 2 usage, 3 secret-shaped content."""
+init installs the document contract and prints the two blocks it will not write.
+inventory censuses a repository. diff compares one document against one selected target.
+Exit codes: 0 clean, 1 findings, 2 usage, 3 secret-shaped content."""
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) > 1 and argv[1] == "init":
+        return init_main([argv[0]] + argv[2:])
     if len(argv) > 1 and argv[1] == "inventory":
         return inventory_main([argv[0]] + argv[2:])
     if len(argv) > 1 and argv[1] == "diff":
