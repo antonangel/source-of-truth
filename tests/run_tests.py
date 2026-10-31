@@ -409,6 +409,36 @@ def golden_checks() -> list[str]:
     return failures
 
 
+def readme_checks() -> list[str]:
+    """The README is derived from the skill: it may not claim what the script does not do,
+    restate the skill's own lines, or link to files that are not there."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fact_diff", SCRIPT)
+    fd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fd)
+
+    failures = []
+    readme = (ROOT / "README.md").read_text()
+    skill = (ROOT / "skills" / "source-of-truth" / "SKILL.md").read_text()
+
+    line = re.search(r"^\s*Fact kinds:(.*)$", readme, re.M)
+    listed = set(re.findall(r"`([a-z]+)`", line.group(1))) if line else set()
+    if listed != set(fd.KINDS) or set(fd.extract("")) != set(fd.KINDS):
+        failures.append(f"README lists fact kinds {sorted(listed)}; the script extracts {sorted(fd.KINDS)}")
+
+    for text in readme.splitlines():
+        if len(text.strip()) >= 60 and not text.lstrip().startswith(("```", "|")) \
+                and text.strip() in skill:
+            failures.append(f"README restates a line from SKILL.md: {text.strip()[:60]}...")
+
+    for target in re.findall(r"\]\(([^)#]+)(?:#[^)]*)?\)", readme):
+        if not target.startswith(("http://", "https://")) and not (ROOT / target).exists():
+            failures.append(f"README links to a missing file: {target}")
+    if len(readme.splitlines()) > 70:
+        failures.append(f"README is {len(readme.splitlines())} lines; keep it under 70")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
 
@@ -437,7 +467,7 @@ def main() -> int:
     else:
         print(f"PASS smoke flags {len(SMOKE_EXPECTED)} facts")
 
-    for label, check in (("secrets", secret_checks), ("--kinds", kinds_checks), ("inventory", inventory_checks), ("homelab golden", golden_checks)):
+    for label, check in (("secrets", secret_checks), ("--kinds", kinds_checks), ("inventory", inventory_checks), ("homelab golden", golden_checks), ("readme", readme_checks)):
         found_failures = check()
         failures.extend(found_failures)
         if not found_failures:
@@ -450,7 +480,7 @@ def main() -> int:
         print(f"\n{len(failures)} failure(s)")
         return 1
 
-    print(f"\n{len(CASES) + 5} check(s) passed")
+    print(f"\n{len(CASES) + 6} check(s) passed")
     return 0
 
 
