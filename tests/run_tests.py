@@ -8,6 +8,7 @@ Standard library only; no network, no install step.
 """
 
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -345,6 +346,69 @@ def inventory_checks() -> list[str]:
     return failures
 
 
+FIXTURE = HERE / "fixtures" / "homelab"
+GOLDEN_VS_SKILL = {
+    ("host", "pihole.lan"), ("ip", "192.168.1.1"),
+    ("port", "443"), ("port", "53"), ("port", "80"), ("port", "8080"),
+    ("command", "cd /srv/stack/dns"), ("command", "docker compose pull"),
+    ("command", "docker compose up -d pihole"),
+}
+GOLDEN_DRIFT = {
+    ("path", "/srv/stack/dns"), ("host", "pihole.lan"), ("ip", "192.168.1.1"), ("port", "8080"),
+}
+DRIFT_KINDS = "--kinds=path,host,ip,port,env,id"
+
+
+def run_in(cwd: Path, *args: str) -> tuple[int, str, str]:
+    proc = subprocess.run([sys.executable, str(SCRIPT), *args], cwd=cwd,
+                          capture_output=True, text=True)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def golden_checks() -> list[str]:
+    """A realistic homelab doc, skill and compose file with exact expected results,
+    plus the claim that references/before-after-homelab.md shows real output."""
+    failures = []
+    doc, skill, config = "docs/dns-runbook.md", "skills/network-ops", "config"
+
+    rc, out, err = run_in(FIXTURE, doc, skill)
+    if rc != 1 or parse_facts(out) != GOLDEN_VS_SKILL:
+        failures.append(f"golden vs skill: got {sorted(parse_facts(out))} rc={rc}\n{out}")
+    if f"possible secret (credential assignment) at {doc}:24" not in err or "hunter2" in out + err:
+        failures.append(f"golden: secret warning missing or leaking\n{err}")
+
+    rc, out_drift, _ = run_in(FIXTURE, doc, config, DRIFT_KINDS)
+    if rc != 1 or parse_facts(out_drift) != GOLDEN_DRIFT:
+        failures.append(f"golden drift: got {sorted(parse_facts(out_drift))} rc={rc}\n{out_drift}")
+
+    # The migrated state: secret scrubbed, doc copied verbatim into the skill's references/.
+    with tempfile.TemporaryDirectory() as tmp:
+        migrated = Path(tmp) / "homelab"
+        shutil.copytree(FIXTURE, migrated)
+        scrubbed = (migrated / doc).read_text().replace("hunter2hunter2", "<password>")
+        (migrated / doc).write_text(scrubbed)
+        (migrated / skill / "references").mkdir()
+        (migrated / skill / "references" / "dns-runbook.md").write_text(scrubbed)
+        rc, out_after, err_after = run_in(migrated, doc, skill)
+    if rc != 0 or err_after:
+        failures.append(f"golden after migration: expected clean exit 0, got rc={rc}\n{out_after}{err_after}")
+
+    # Every example in the before/after reference must equal what the script prints.
+    text = (ROOT / "skills" / "source-of-truth" / "references" / "before-after-homelab.md").read_text()
+    blocks = re.findall(r"```text\n\$ python3 scripts/fact-diff\.py [^\n]*\n(.*?)```", text, re.S)
+    actual = [out, out_after, out_drift]
+    if len(blocks) != 3:
+        failures.append(f"before-after-homelab.md: expected 3 command examples, found {len(blocks)}")
+    else:
+        for name, shown, real in zip(("before", "after", "drift"), blocks, actual):
+            if shown.strip() != real.strip():
+                failures.append(f"before-after-homelab.md {name} example is out of date:\n"
+                                f"--- doc\n{shown}--- script\n{real}")
+    if "docs/dns-runbook.md:24" not in text:
+        failures.append("before-after-homelab.md: secret warning line missing")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
 
@@ -373,7 +437,7 @@ def main() -> int:
     else:
         print(f"PASS smoke flags {len(SMOKE_EXPECTED)} facts")
 
-    for label, check in (("secrets", secret_checks), ("--kinds", kinds_checks), ("inventory", inventory_checks)):
+    for label, check in (("secrets", secret_checks), ("--kinds", kinds_checks), ("inventory", inventory_checks), ("homelab golden", golden_checks)):
         found_failures = check()
         failures.extend(found_failures)
         if not found_failures:
@@ -386,7 +450,7 @@ def main() -> int:
         print(f"\n{len(failures)} failure(s)")
         return 1
 
-    print(f"\n{len(CASES) + 4} check(s) passed")
+    print(f"\n{len(CASES) + 5} check(s) passed")
     return 0
 
 

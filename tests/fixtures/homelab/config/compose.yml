@@ -1,0 +1,20 @@
+services:
+  pihole:
+    image: pihole/pihole:latest
+    container_name: pihole
+    networks:
+      lan:
+        ipv4_address: 192.168.1.2
+    ports:
+      - "53:53"
+      - "8081:80"
+  proxy:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "443:443"
+networks:
+  lan:
+    ipam:
+      config:
+        - subnet: 192.168.1.0/24
