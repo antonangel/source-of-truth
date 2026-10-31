@@ -287,23 +287,74 @@ def check_main(argv: list[str]) -> int:
     return EXIT_CLEAN
 
 
-INIT_USAGE = "usage: sot.py init [repo-dir] [--print] [--force]"
+INIT_USAGE = "usage: sot.py init [repo-dir] [--print] [--hook] [--force]"
+
+HOOK_MARKER = "Managed by source-of-truth"
+
+HOOK_BODY = """#!/bin/sh
+# {marker} — installed by `sot.py init --hook`. Delete this file to remove the check.
+cd "$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+if [ ! -f "{ref}" ]; then
+  echo "source-of-truth: {ref} is missing, skipping the document check (re-run init --hook)" >&2
+  exit 0
+fi
+exec python3 "{ref}" check --staged --strict
+"""
+
+
+def _hooks_dir(root: Path) -> Path | None:
+    """Honour core.hooksPath: `--git-path hooks` is the only correct answer."""
+    path = _git("rev-parse", "--git-path", "hooks", cwd=root)
+    if not path:
+        return None
+    hooks = Path(path)
+    if hooks.is_absolute():
+        return hooks
+    top = _git("rev-parse", "--show-toplevel", cwd=root)
+    return (Path(top) if top else root) / hooks
+
+
+def install_hook(root: Path, ref: str, do_print: bool) -> int:
+    hooks = _hooks_dir(root)
+    if hooks is None:
+        print("could not resolve the git hooks directory", file=sys.stderr)
+        return EXIT_USAGE
+    hook = hooks / "pre-commit"
+    if hook.exists():
+        if HOOK_MARKER not in hook.read_text(errors="ignore"):
+            print(f"refused  {hook}  an unmanaged pre-commit hook exists; not touching it",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        print(f"{'skip (managed)':<18}{hook}")
+        return EXIT_CLEAN
+    body = HOOK_BODY.format(marker=HOOK_MARKER, ref=ref)
+    if do_print:
+        print(f"{'would write':<18}{hook}")
+        print(body)
+        return EXIT_CLEAN
+    hooks.mkdir(parents=True, exist_ok=True)
+    hook.write_text(body)
+    hook.chmod(0o755)
+    print(f"{'write':<18}{hook}")
+    return EXIT_CLEAN
 
 
 def parse_init_args(argv: list[str]):
-    args, do_print, force = [], False, False
+    args, do_print, force, hook = [], False, False, False
     for arg in argv[1:]:
         if arg == "--print":
             do_print = True
         elif arg == "--force":
             force = True
+        elif arg == "--hook":
+            hook = True
         elif arg.startswith("--"):
             return None
         else:
             args.append(arg)
     if len(args) > 1:
         return None
-    return (Path(args[0]) if args else Path(".")), do_print, force
+    return (Path(args[0]) if args else Path(".")), do_print, force, hook
 
 
 def _git(*args: str, cwd: Path) -> str | None:
@@ -329,7 +380,7 @@ def init_main(argv: list[str]) -> int:
     if parsed is None:
         print(INIT_USAGE, file=sys.stderr)
         return EXIT_USAGE
-    root, do_print, force = parsed
+    root, do_print, force, hook = parsed
     if not root.is_dir():
         print(f"not a directory: {root}", file=sys.stderr)
         return EXIT_USAGE
@@ -364,6 +415,12 @@ def init_main(argv: list[str]) -> int:
         print(f"{written} would be written, {skipped} skipped (--print: nothing written)")
     else:
         print(f"{written} written, {skipped} skipped")
+
+    hook_status = EXIT_CLEAN
+    if hook:
+        print()
+        hook_status = install_hook(root, ref, do_print)
+
     print()
     print("paste this into AGENTS.md (this tool never edits it):")
     print()
@@ -371,11 +428,11 @@ def init_main(argv: list[str]) -> int:
     print("paste this into your CI workflow (this tool never writes it):")
     print()
     print(ci_snippet(ref))
-    return EXIT_CLEAN
+    return hook_status
 
 
 USAGE = """usage:
-  sot.py init [repo-dir] [--print] [--force]
+  sot.py init [repo-dir] [--print] [--hook] [--force]
   sot.py check [repo-dir] [--staged] [--all] [--strict]
   sot.py inventory [repo-dir] [--top=N]
   sot.py diff <doc.md> <skill-dir | SKILL.md | config-dir> [--profile=skill|config]

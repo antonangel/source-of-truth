@@ -34,10 +34,11 @@ plus an invoked sweep that produces work for a human instead of a verdict.
    `AGENTS.md`. `--print` shows the whole set and writes nothing. `--force` overwrites files it owns.
 
 3. **The trigger is installed, and scoped to the index.** `init --hook` installs a pre-commit hook
-   running `check --staged`. A dirty sibling file is never in the index, so the failure that banned
-   doc linting from pre-push — `validate-repo.py` against a dirty working tree — cannot recur.
-   The CI snippet is printed rather than written because `.git/hooks` is not versioned and a team
-   needs the versioned form.
+   running `check --staged --strict`. A dirty sibling file is never in the index, so the failure that
+   banned doc linting from pre-push — `validate-repo.py` against a dirty working tree — cannot recur.
+   `--strict` because a commit is the moment the document is being touched, which is exactly when an
+   undeclared class stops being advisory (§4). The CI snippet is printed rather than written because
+   `.git/hooks` is not versioned and a team needs the versioned form.
 
 4. **`check` enforces five of seven classes, and tiers its findings instead of softening its exit.**
    Exit `0` keeps meaning clean *at the threshold*; `--strict` lowers the threshold so info-tier
