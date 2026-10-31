@@ -1,6 +1,6 @@
 # Consolidation walkthrough
 
-A real run, kept for the numbers rather than the story: a single-node infrastructure repo, 27 runbooks,
+A real run, kept for the numbers rather than the story: a single-node homelab repo, 27 runbooks,
 334 skills, and a doctrine that said procedural docs belong in skills.
 
 ## What the measurement said
