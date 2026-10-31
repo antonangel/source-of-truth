@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.6.0
+
+Three verbs and a contract that stays installed (ADR 0002).
+
+- **`init`** installs the document contract: `docs/doc-classes.md`, `docs/templates/{adr,runbook}.md`
+  and `.sotignore`, written only when absent. It prints the `AGENTS.md` block and a CI snippet and
+  writes neither. `--print` writes nothing, `--force` overwrites only files it owns, and an existing
+  `AGENTS.md` is never touched. The script resolves its own path at run time — relative to the git
+  root when it lives inside the repository, absolute when it does not — so no printed command carries
+  a hardcoded install path.
+- **`init --hook`** installs a pre-commit check over staged Markdown only. A dirty sibling file is
+  never in the index, so the failure that banned doc linting from pre-push cannot recur. An unmanaged
+  hook is refused by name; a managed one is skipped; a moved script skips the check rather than
+  blocking every commit.
+- **`check`** enforces five of seven classes — `derived` provably generated, one `authority`, one
+  `vocabulary`, `navigational` links and `canonical:` targets resolving — and reports the rest at info
+  tier. Tiers, not a softened exit: `0` means clean at the threshold, `--strict` lowers the threshold,
+  and info-tier findings always print.
+- **`audit`** emits one row per document — class, facts, inbound references, a candidate target, the
+  exact `diff` command — ranked and never judged. It exits `0` whenever it produced a plan. Records
+  and stubs are skipped and listed last.
+- Classes own facts; directories own storage. `vendor` and `template` are directory attributes with
+  no rule. Class comes from frontmatter, then an optional `.sotclasses` map; there is no name map.
+- `diff` and `inventory` are unchanged, including their output and exit codes.
+- The honest claim is **five enforced classes, not seven**: no machine can tell a good runbook from a
+  bad one, so `procedural` is declarable and unjudged, and `decided` is advisory.
+- Measured on a real 890-document homelab: `audit` completes in 9.1 s, pairs 380 documents and skips
+  204 records. The first eleven of twelve ranked rows were vendored third-party skills until
+  `external/` was listed in `.sotignore` — the vendor exclusion is load-bearing, and `init` ships it.
+
 ## 1.5.0
 
 - Narrow the first-run promise to a read-only comparison of one operator-selected document against one confirmed config or skill target. Findings are literal, with exact document lines; the CLI does not claim semantic or live-state validation.
