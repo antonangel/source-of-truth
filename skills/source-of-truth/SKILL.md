@@ -1,7 +1,7 @@
 ---
 name: source-of-truth
 description: "Use when docs need auditing, consolidating, or cleanup: two docs disagree, a doc restates config or code, a runbook is duplicated by a skill, or an authority doc omits a live subsystem."
-version: 1.0.0
+version: 1.1.0
 license: MIT
 ---
 

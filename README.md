@@ -40,7 +40,7 @@ verbatim → stub → verify. The doc's path survives as a pointer, so every inb
 python3 skills/source-of-truth/scripts/fact-diff.py docs/backup.md ~/.claude/skills/backup-ops
 ```
 
-Lists the paths, hosts, ids, env vars, ports and command lines the doc holds that the skill does not.
+Lists the paths, hosts, IP addresses, ids, env vars, ports and command lines the doc holds that the skill does not.
 **Exit 0** = no missing facts detected — necessary, not sufficient, because the script compares facts
 and not usefulness. **Exit 1** = the doc is not redundant; it is unmigrated.
 
