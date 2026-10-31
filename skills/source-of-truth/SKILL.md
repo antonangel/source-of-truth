@@ -1,6 +1,6 @@
 ---
 name: source-of-truth
-description: "Use when docs need auditing, consolidating, or cleanup: two docs disagree, a doc restates config or code, a runbook is duplicated by a skill, or an authority doc omits a live subsystem."
+description: "Use when homelab docs need auditing or cleanup: a stale runbook, AGENTS.md or CLAUDE.md that disagrees with compose or config, a doc duplicated by a skill, runbooks holding secrets, or consolidating docs into skills. Gives each fact one home and gates stubbing with a fact-diff."
 version: 1.1.0
 license: MIT
 ---
