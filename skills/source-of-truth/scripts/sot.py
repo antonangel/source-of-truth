@@ -80,6 +80,10 @@ HOST_RE = re.compile(
 )
 ID_RE = re.compile(r"\b[0-9a-f]{12,}\b")
 ENV_RE = re.compile(r"(?<!\w)([A-Z][A-Z0-9_]{2,})=(?!=)")
+ENV_YAML_RE = re.compile(r"(?<!\w)([A-Z][A-Z0-9_]{2,}):\s+\S")
+ENV_STOPWORDS = {"NOTE", "TODO", "WARNING", "FIXME", "SEE", "HTTP", "HTTPS", "SSH",
+                "TCP", "UDP", "URL", "API", "ID", "IP", "DNS", "TLS", "SSL", "LAN",
+                "WAN", "CIDR", "CPU", "RAM", "GPU", "OS"}
 PORT_RE = re.compile(
     r":(\d{2,5})"
     r"|\bport[: ]+(\d{2,5})\b"
@@ -297,12 +301,17 @@ def extract(text: str) -> dict[str, set[str]]:
         if is_hostname(candidate):
             hosts.add(candidate.lower())
 
+    envs = {m.group(1) for m in ENV_RE.finditer(text)}
+    for m in ENV_YAML_RE.finditer(text):
+        name = m.group(1)
+        if name not in ENV_STOPWORDS:
+            envs.add(name)
     return {
         "path": paths,
         "host": hosts,
         "ip": {m.group(1) for m in IPV4_RE.finditer(text)},
         "port": find_ports(text),
-        "env": {m.group(1) for m in ENV_RE.finditer(text)},
+        "env": envs,
         "id": set(ID_RE.findall(text.lower())),
         "command": fenced_commands(text) | inline_commands(text),
     }
@@ -320,6 +329,10 @@ def skill_corpus(target: Path) -> str:
             text = p.read_text(errors="ignore")
         except OSError:
             continue
+        if p.suffix.lower() in {".yml", ".yaml"}:
+            text = re.sub(r"(?m)^(\s*)([A-Z][A-Z0-9_]{2,}):\s", r"\1\2=", text)
+        if p.suffix.lower() == ".nix":
+            text = re.sub(r"([A-Z][A-Z0-9_]{2,})\s+=\s+", r"\1=", text)
         chunks.append(re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", text))  # join continued lines
     return norm("\n".join(chunks))
 
