@@ -98,4 +98,5 @@ explicit approval. Show the diff afterwards. Never auto-commit, schedule, or fil
 
 - `references/examples.md`: real output for `init`, `diff`, `check` and `audit`, generated from the CLI.
 - `references/sources-and-secrets.md`: source ownership, secret handling, and the audit plan format.
-- `docs/adr/0002-three-verbs-and-the-standing-contract.md`: why the three verbs are shaped this way.
+- The source repository's `docs/adr/0002-three-verbs-and-the-standing-contract.md` explains why the
+  three verbs are shaped this way; the ADR is not shipped with the installed skill.
