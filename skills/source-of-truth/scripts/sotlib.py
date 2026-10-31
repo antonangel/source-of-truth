@@ -17,8 +17,10 @@ import bisect
 import fnmatch
 import os
 import re
+import subprocess
 import sys
 import time
+from collections import namedtuple
 from pathlib import Path
 
 KINDS = ("path", "host", "ip", "port", "env", "id", "command")
@@ -578,5 +580,245 @@ def inbound_counts(docs: dict[str, tuple[Path, str]]) -> dict[str, int]:
         for hit in hits:
             counts[hit] += 1
     return counts
+
+
+# --------------------------------------------------------------------------- document classes
+
+DOC_CLASSES = ("authority", "decided", "derived", "navigational",
+               "procedural", "record", "vocabulary")
+ENFORCED = frozenset({"derived", "authority", "vocabulary", "navigational"})
+ADVISORY = frozenset({"decided"})
+EXEMPT = frozenset({"procedural", "record"})
+SINGLETON_CLASSES = ("authority", "vocabulary")
+
+GENERATED_STAMP_RE = re.compile(r"^\s*(?:>|\*|-)?\s*Generated:", re.I | re.M)
+DOCS_PATH_RE = re.compile(r"(?<![\w./~-])(docs/[A-Za-z0-9_./-]*[A-Za-z0-9_-])")
+TRAILING_PUNCT = ".,;:)]}'\"`"
+
+Finding = namedtuple("Finding", "tier code path line message")
+
+
+def frontmatter(text: str) -> dict[str, str]:
+    """Parse the leading `---` block only: a `class:` in prose is not a declaration."""
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    out: dict[str, str] = {}
+    for line in text[3:end].splitlines():
+        if not line.strip() or line[0] in " \t#" or line.startswith("- "):
+            continue
+        if ":" in line:
+            key, value = line.split(":", 1)
+            out[key.strip().lower()] = value.strip().strip("'\"")
+    return out
+
+
+def load_dir_map(root: Path) -> dict[str, str]:
+    """Optional `.sotclasses`: one `path class` pair per line.
+
+    The taxonomy stays tool-owned; only the mapping is repository data, like `.sotignore`. A map
+    the code reads is fine where a *class list* the code reads would be a second authority.
+    """
+    f = root / ".sotclasses"
+    if not f.is_file():
+        return {}
+    out: dict[str, str] = {}
+    for line in f.read_text(errors="ignore").splitlines():
+        line = line.split("#", 1)[0].strip()
+        parts = line.split()
+        if len(parts) == 2:
+            out[parts[0].strip("/")] = parts[1].lower()
+    return out
+
+
+def classify(rel: str, text: str, dir_map: dict[str, str]) -> str | None:
+    declared = frontmatter(text).get("class")
+    if declared:
+        return declared.lower()
+    for prefix in sorted(dir_map, key=len, reverse=True):
+        if rel == prefix or rel.startswith(prefix + "/"):
+            return dir_map[prefix]
+    return None
+
+
+def declared_classes(root: Path, patterns: list[str]) -> dict[str, list[str]]:
+    """Which documents declare which class, from the frontmatter window only.
+
+    The singleton rules (authority, vocabulary) need the whole repository even when `check` was
+    pointed at three changed files, and reading 2 KB per document keeps that scan in milliseconds
+    where the full census costs seconds.
+    """
+    out: dict[str, list[str]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames
+                             if d.lower() not in SKIP_DIRS and not ignored_name(d, patterns))
+        for name in sorted(filenames):
+            if not name.lower().endswith((".md", ".markdown")):
+                continue
+            path = Path(dirpath) / name
+            rel = path.relative_to(root).as_posix()
+            if ignored_path(rel, name, patterns):
+                continue
+            try:
+                with path.open(errors="ignore") as handle:
+                    head = handle.read(2048)
+            except OSError:
+                continue
+            declared = frontmatter(head).get("class")
+            if declared:
+                out.setdefault(declared.lower(), []).append(rel)
+    return out
+
+
+def doc_paths(text: str):
+    """Every `docs/...` path a document names, with its line."""
+    starts = line_starts(text)
+    for match in DOCS_PATH_RE.finditer(text):
+        yield match.group(1).rstrip(TRAILING_PUNCT), line_at(starts, match.start())
+
+
+# --------------------------------------------------------------------------- git probes
+
+def _git(root: Path, *args: str) -> str | None:
+    proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def is_git_work_tree(root: Path) -> bool:
+    return _git(root, "rev-parse", "--is-inside-work-tree") == "true"
+
+
+def git_toplevel(root: Path) -> Path | None:
+    top = _git(root, "rev-parse", "--show-toplevel")
+    return Path(top) if top else None
+
+
+def is_ignored(root: Path, rel: str) -> bool:
+    """`git check-ignore` exits 0 outside a work tree, so prove the tree and the untracked state
+    first — otherwise a hand-written file passes as generated."""
+    if not is_git_work_tree(root):
+        return False
+    if _git(root, "ls-files", "--error-unmatch", rel) is not None:
+        return False
+    return subprocess.run(["git", "-C", str(root), "check-ignore", "-q", rel],
+                          capture_output=True).returncode == 0
+
+
+def _relative_to_root(top: Path, root: Path, listing: str | None) -> list[str]:
+    out: list[str] = []
+    for line in (listing or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rel = os.path.relpath(top / line, root).replace(os.sep, "/")
+        if not rel.startswith(".."):
+            out.append(rel)
+    return out
+
+
+def check_scope(root: Path, mode: str) -> tuple[list[str] | None, str, str | None]:
+    """Return (paths, description, error). `paths is None` means the whole repository."""
+    if mode == "all":
+        return None, "whole repository", None
+    if not is_git_work_tree(root):
+        return None, "", f"not a git work tree: {root}"
+    top = git_toplevel(root)
+    if top is None:
+        return None, "", f"not a git work tree: {root}"
+    if mode == "staged":
+        listing = _git(top, "diff", "--cached", "--name-only", "--diff-filter=AM")
+        return _relative_to_root(top, root, listing), "index vs HEAD", None
+    for base in ("@{upstream}", "main", "master", "HEAD"):
+        listing = _git(top, "diff", "--diff-filter=AM", "--name-only", base)
+        if listing is not None:
+            return _relative_to_root(top, root, listing), f"{base}..working tree", None
+    return None, "", "no git base found (tried @{upstream}, main, master, HEAD)"
+
+
+# --------------------------------------------------------------------------- check
+
+def check_docs(root: Path, paths: list[str] | None) -> tuple[list[Finding], list[tuple[str, int, str]]]:
+    """Structural findings for the selected documents, plus secret hits. Read-only."""
+    patterns = load_ignore(root)
+    dir_map = load_dir_map(root)
+
+    if paths is None:
+        docs = census(root, patterns)
+    else:
+        docs = {}
+        for rel in paths:
+            path = root / rel
+            if path.is_file() and path.suffix.lower() in (".md", ".markdown"):
+                try:
+                    docs[rel] = (path, path.read_text(errors="ignore"))
+                except OSError:
+                    continue
+
+    findings: list[Finding] = []
+    secrets: list[tuple[str, int, str]] = []
+
+    declared = declared_classes(root, patterns)
+    for cls in SINGLETON_CLASSES:
+        owners = sorted(declared.get(cls, []))
+        if len(owners) > 1:
+            findings.append(Finding(
+                "fail", "singleton", owners[0], 0,
+                f"class '{cls}' is declared by {len(owners)} documents: " + ", ".join(owners)))
+
+    decision_numbers: dict[str, list[str]] = {}
+
+    for rel in sorted(docs):
+        _, text = docs[rel]
+        cls = classify(rel, text, dir_map)
+
+        for number, kind in secret_lines(text):
+            secrets.append((rel, number, kind))
+
+        if cls is None:
+            findings.append(Finding(
+                "info", "undeclared", rel, 0,
+                "undeclared class (add `class: <name>` to frontmatter, or map its directory in "
+                ".sotclasses)"))
+            continue
+        if cls not in DOC_CLASSES:
+            findings.append(Finding(
+                "fail", "unknown-class", rel, 0,
+                f"unknown class '{cls}'; expected one of " + ", ".join(DOC_CLASSES)))
+            continue
+
+        if cls == "derived" and not (GENERATED_STAMP_RE.search(text[:1000]) or is_ignored(root, rel)):
+            findings.append(Finding(
+                "fail", "derived", rel, 0,
+                "declares class 'derived' but is not provably generated (gitignored, or a "
+                "`Generated:` stamp in the first 1000 characters)"))
+
+        if cls == "navigational":
+            for value, line in doc_paths(text):
+                if not (root / value).exists():
+                    findings.append(Finding("fail", "dead-path", rel, line,
+                                            f"path does not resolve: {value}"))
+
+        canonical = frontmatter(text).get("canonical")
+        if canonical:
+            target = canonical.lstrip("./")
+            if not (root / target).exists():
+                findings.append(Finding("fail", "canonical", rel, 0,
+                                        f"canonical target does not resolve: {canonical}"))
+
+        if cls == "decided":
+            match = re.match(r"(\d+)", Path(rel).name)
+            if match:
+                decision_numbers.setdefault(match.group(1), []).append(rel)
+
+    for number, owners in sorted(decision_numbers.items()):
+        if len(owners) > 1:
+            findings.append(Finding(
+                "info", "decision-number", sorted(owners)[0], 0,
+                f"decision number {number} is used by " + ", ".join(sorted(owners))))
+
+    findings.sort(key=lambda f: (f.path, f.line, f.code))
+    return findings, secrets
 
 

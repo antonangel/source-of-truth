@@ -62,8 +62,8 @@ if _HERE not in sys.path:
 from sotassets import OWNED, agents_block, ci_snippet
 from sotlib import (
     EXIT_CLEAN, EXIT_MISSING, EXIT_SECRET, EXIT_USAGE, KINDS, PROFILES,
-    census, extract, find_ports, inbound_counts, is_pointer, is_record,
-    load_ignore, pointer_needles, present, secret_lines, skill_corpus,
+    census, check_docs, check_scope, extract, find_ports, inbound_counts, is_pointer,
+    is_record, load_ignore, pointer_needles, present, secret_lines, skill_corpus,
 )
 
 
@@ -225,6 +225,68 @@ def inventory_main(argv: list[str]) -> int:
     return EXIT_CLEAN
 
 
+CHECK_USAGE = "usage: sot.py check [repo-dir] [--staged] [--all] [--strict]"
+
+
+def parse_check_args(argv: list[str]):
+    args, mode, strict = [], "default", False
+    for arg in argv[1:]:
+        if arg == "--staged":
+            mode = "staged"
+        elif arg == "--all":
+            mode = "all"
+        elif arg == "--strict":
+            strict = True
+        elif arg.startswith("--"):
+            return None
+        else:
+            args.append(arg)
+    if len(args) > 1:
+        return None
+    return (Path(args[0]) if args else Path(".")), mode, strict
+
+
+def check_main(argv: list[str]) -> int:
+    parsed = parse_check_args(argv)
+    if parsed is None:
+        print(CHECK_USAGE, file=sys.stderr)
+        return EXIT_USAGE
+    root, mode, strict = parsed
+    if not root.is_dir():
+        print(f"not a directory: {root}", file=sys.stderr)
+        return EXIT_USAGE
+
+    paths, description, error = check_scope(root, mode)
+    if error:
+        print(error, file=sys.stderr)
+        return EXIT_USAGE
+    print(f"checking: {description}", file=sys.stderr)
+    if paths is not None and not paths:
+        print("no changed documents", file=sys.stderr)
+        return EXIT_CLEAN
+
+    findings, secrets = check_docs(root, paths)
+    for finding in findings:
+        location = f"{finding.path}:{finding.line}" if finding.line else finding.path
+        print(f"{finding.tier:<5} {location}  {finding.message}")
+    for rel, number, kind in secrets:
+        print(f"warning: possible secret ({kind}) at {rel}:{number}", file=sys.stderr)
+
+    fails = sum(1 for finding in findings if finding.tier == "fail")
+    infos = len(findings) - fails
+    if findings:
+        print(f"{len(findings)} findings ({fails} fail, {infos} info)")
+    else:
+        print("no findings")
+
+    if secrets:
+        print(f"secret warnings: {len(secrets)} (exit 3)", file=sys.stderr)
+        return EXIT_SECRET
+    if fails or (strict and infos):
+        return EXIT_MISSING
+    return EXIT_CLEAN
+
+
 INIT_USAGE = "usage: sot.py init [repo-dir] [--print] [--force]"
 
 
@@ -314,11 +376,14 @@ def init_main(argv: list[str]) -> int:
 
 USAGE = """usage:
   sot.py init [repo-dir] [--print] [--force]
+  sot.py check [repo-dir] [--staged] [--all] [--strict]
   sot.py inventory [repo-dir] [--top=N]
   sot.py diff <doc.md> <skill-dir | SKILL.md | config-dir> [--profile=skill|config]
               [--kinds=KINDS] [--all] [--quiet] [--force]
 
 init installs the document contract and prints the two blocks it will not write.
+check reports structural findings for changed documents (default), the index (--staged) or the
+whole repository (--all); --strict promotes info-tier findings to a failure.
 inventory censuses a repository. diff compares one document against one selected target.
 Exit codes: 0 clean, 1 findings, 2 usage, 3 secret-shaped content."""
 
@@ -326,6 +391,8 @@ Exit codes: 0 clean, 1 findings, 2 usage, 3 secret-shaped content."""
 def main(argv: list[str]) -> int:
     if len(argv) > 1 and argv[1] == "init":
         return init_main([argv[0]] + argv[2:])
+    if len(argv) > 1 and argv[1] == "check":
+        return check_main([argv[0]] + argv[2:])
     if len(argv) > 1 and argv[1] == "inventory":
         return inventory_main([argv[0]] + argv[2:])
     if len(argv) > 1 and argv[1] == "diff":

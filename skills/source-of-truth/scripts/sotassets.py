@@ -28,8 +28,10 @@ vendored tree is somebody else's text and no rule applies to it.
 
 A file's class is decided in this order:
 
-1. **Directory map** — a directory with one class declares it for every file inside.
-2. **Frontmatter** — `class: <name>` in the file's YAML frontmatter.
+1. **Frontmatter** — `class: <name>` in the file's YAML frontmatter.
+2. **Directory map** — an optional `.sotclasses` file maps a directory to a class for every file
+   inside, one `path class` pair per line. It is repository data, like `.sotignore`; the class list
+   itself belongs to the tool and is not configurable.
 3. **Unmapped** — reported as `info`. It is not an error; it is a prompt to classify the file the
    next time you touch it.
 
