@@ -369,9 +369,57 @@ def run_in(cwd: Path, *args: str) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def first_check_checks() -> list[str]:
+    """The documented first-run command finds one literal mismatch and writes nothing."""
+    failures = []
+    doc_arg = "tests/fixtures/first-check/docs/dns-runbook.md"
+    target_arg = "tests/fixtures/first-check/config"
+    doc = ROOT / doc_arg
+    target = ROOT / target_arg
+    doc_before = doc.read_bytes()
+    target_before = {p.relative_to(target).as_posix(): p.read_bytes()
+                     for p in target.rglob("*") if p.is_file()}
+    command = [sys.executable, "skills/source-of-truth/scripts/sot.py", "diff",
+               doc_arg, target_arg, "--profile=config"]
+    proc = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    expected_line = f"ip       203.0.113.10  {doc_arg}:3"
+    expected_output = expected_line + "\nmissing facts: 1 of 1 checked\n"
+    if proc.returncode != 1 or proc.stdout != expected_output or proc.stderr:
+        failures.append("first check: expected exactly one IP finding, its doc:line, no warning, "
+                        f"and exit 1; got rc={proc.returncode}\n{proc.stdout}{proc.stderr}")
+    if doc.read_bytes() != doc_before:
+        failures.append("first check: modified the selected document")
+    target_after = {p.relative_to(target).as_posix(): p.read_bytes()
+                    for p in target.rglob("*") if p.is_file()}
+    if target_after != target_before:
+        failures.append("first check: modified the comparison target")
+
+    # A matched control guards the clean exit and the same read-only promise.
+    with tempfile.TemporaryDirectory() as tmp:
+        matched_target = Path(tmp) / "config"
+        matched_target.mkdir()
+        matched_file = matched_target / "dns.yml"
+        matched_file.write_text("resolver: 203.0.113.10\n")
+        matched_before = matched_file.read_bytes()
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "diff", str(doc), str(matched_target),
+             "--profile=config"], cwd=ROOT, capture_output=True, text=True,
+        )
+        if proc.returncode != 0 or proc.stdout != "no missing facts detected (1 checked)\n" or proc.stderr:
+            failures.append("first check matched control: expected clean exit 0 with one checked fact; "
+                            f"got rc={proc.returncode}\n{proc.stdout}{proc.stderr}")
+        if doc.read_bytes() != doc_before or matched_file.read_bytes() != matched_before:
+            failures.append("first check matched control: modified a selected input")
+
+    readme = (ROOT / "README.md").read_text()
+    demo = "python3 skills/source-of-truth/scripts/sot.py diff " + doc_arg + " " + target_arg + " --profile=config"
+    if demo not in readme or expected_output.rstrip() not in readme:
+        failures.append("README first check: copy-paste command or exact expected output is missing")
+    return failures
+
+
 def golden_checks() -> list[str]:
-    """A realistic homelab doc, skill and compose file with exact expected results,
-    plus the claim that references/before-after-homelab.md shows real output."""
+    """Regression coverage for skill/config comparisons and the reproducible quick-check example."""
     failures = []
     doc, skill, config = "docs/dns-runbook.md", "skills/network-ops", "config"
 
@@ -398,19 +446,18 @@ def golden_checks() -> list[str]:
     if rc != 0 or real_err.strip():
         failures.append(f"golden after migration: expected clean exit 0, got rc={rc}\n{out_after}{err_after}")
 
-    # Every example in the before/after reference must equal what the script prints.
+    # The published example command and output must match a real execution from the repo root.
     text = (ROOT / "skills" / "source-of-truth" / "references" / "examples.md").read_text()
-    blocks = re.findall(r"```text\n\$ python3 scripts/sot\.py diff [^\n]*\n(.*?)```", text, re.S)
-    actual = [out, out_after, out_drift]
-    if len(blocks) != 3:
-        failures.append(f"examples.md: expected 3 command examples, found {len(blocks)}")
-    else:
-        for name, shown, real in zip(("before", "after", "drift"), blocks, actual):
-            if shown.strip() != real.strip():
-                failures.append(f"before-after-homelab.md {name} example is out of date:\n"
-                                f"--- doc\n{shown}--- script\n{real}")
-    if "docs/dns-runbook.md:24" not in text:
-        failures.append("before-after-homelab.md: secret warning line missing")
+    demo_doc = "tests/fixtures/first-check/docs/dns-runbook.md"
+    demo_target = "tests/fixtures/first-check/config"
+    demo_command = ("python3 skills/source-of-truth/scripts/sot.py diff "
+                    f"{demo_doc} {demo_target} --profile=config")
+    demo = subprocess.run(
+        [sys.executable, str(SCRIPT), "diff", demo_doc, demo_target, "--profile=config"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    if demo.returncode != 1 or demo.stderr or demo_command not in text or demo.stdout.rstrip() not in text:
+        failures.append("examples.md: first-check command/output is not reproducible from the repo root")
     return failures
 
 
@@ -425,6 +472,10 @@ def readme_checks() -> list[str]:
     failures = []
     readme = (ROOT / "README.md").read_text()
     skill = (ROOT / "skills" / "source-of-truth" / "SKILL.md").read_text()
+    installed_command = ("python3 .claude/skills/source-of-truth/scripts/sot.py diff "
+                        "path/to/runbook.md path/to/config --profile=config")
+    if installed_command not in readme:
+        failures.append("README does not show the command for the proposed project-level skill location")
 
     line = re.search(r"^\s*Fact kinds:(.*)$", readme, re.M)
     listed = set(re.findall(r"`([a-z]+)`", line.group(1))) if line else set()
@@ -626,9 +677,10 @@ def main() -> int:
         print(f"PASS smoke flags {len(SMOKE_EXPECTED)} facts")
 
     for label, check in (("secrets", secret_checks), ("--kinds", kinds_checks),
-                         ("inventory", inventory_checks), ("homelab golden", golden_checks),
-                         ("readme", readme_checks), ("real-world noise", noise_checks),
-                         ("masking safety", masking_checks), ("profiles", profile_checks),
+                         ("inventory", inventory_checks), ("first check", first_check_checks),
+                         ("homelab golden", golden_checks), ("readme", readme_checks),
+                         ("real-world noise", noise_checks), ("masking safety", masking_checks),
+                         ("profiles", profile_checks),
                          ("pointer paths", pointer_checks), ("inventory speed", perf_checks),
                          ("version agreement", version_checks), ("self inventory", self_inventory_checks)):
         found_failures = check()

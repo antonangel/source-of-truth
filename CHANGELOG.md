@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0
+
+- Narrow the first-run promise to a read-only comparison of one operator-selected document against one confirmed config or skill target. Findings are literal, with exact document lines; the CLI does not claim semantic or live-state validation.
+- Add a minimal one-mismatch fixture and matched control; verify the README command's exact output, exit code, and unchanged inputs. Regenerate the example from the real CLI.
+- Rewrite the README and agent workflow around the selected-source check, operator authority, safe secret handling, and approval-gated broader guidance. Remove unsupported prevalence claims and update the obsolete `fact-diff.py` reference.
+- Claude Code 2.1.49 with project-level `.claude/skills/source-of-truth/` remains the first end-to-end test target, not a support claim; that client/version/path combination is still unverified.
+
 ## 1.4.0
 
 First-run credibility: the tool now finishes on a real repository, and stops reporting facts that

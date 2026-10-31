@@ -1,138 +1,73 @@
 ---
 name: source-of-truth
-description: "Use when homelab docs need auditing or cleanup: a stale runbook, AGENTS.md or CLAUDE.md that disagrees with compose or config, a doc duplicated by a skill, runbooks holding secrets, or consolidating docs into skills. Gives each fact one home and gates stubbing with a fact-diff."
-version: 1.4.0
+description: "Use when comparing a chosen doc to config or a skill."
+version: 1.5.0
 license: MIT
 ---
 
-# Source of Truth
+# Source of Truth: selected-document fact check
 
-A homelab collects docs faster than it collects truth. The agent reads `AGENTS.md`, a memory file,
-a skill and a runbook that each state the same port. When they disagree it picks one, quietly, and
-builds on it. The fix is not fewer docs. It is **one home per fact**.
-
-A doc is a **cache**, not a source. Derive what can be derived, make procedures skills, and keep
-everything else short and singular.
+Help a self-hoster check one chosen infrastructure document against one chosen local config or skill source. The bundled CLI detects literal fact-presence discrepancies; it does not judge correctness, authority, semantics, or live state.
 
 ## When to use
 
-- A runbook looks stale, or `AGENTS.md` / `CLAUDE.md` disagrees with the compose file or config.
-- A doc and a skill describe the same procedure.
-- Two docs state the same port, IP, path or command, so they can disagree.
-- Runbooks contain tokens, keys or passwords.
-- A running service appears in no doc, so readers conclude it does not exist.
+- The operator wants to compare one named runbook or infrastructure document with one named config or skill.
+- The operator asks for a documentation review or consolidation plan. Use the read-only comparison first when they identify a specific document and target; keep broader guidance optional and human-reviewed.
 
-## Ground rules
+Do not turn whole-repository inventory into the default. `scripts/sot.py inventory <repo>` is a separate, explicit operation.
 
-1. **Dry-run first.** Produce the plan (`references/sources-and-secrets.md`) and wait for a yes
-   before moving or stubbing anything.
-2. **Never delete a doc.** A stub keeps its path, so every inbound link survives.
-3. **Secrets before moves.** Scrub a doc's secrets before copying it anywhere. Never print a
-   secret's value; the script reports file and line only.
-4. **Break-glass stays readable off-host.** See `references/sources-and-secrets.md`.
-5. **Stage files by name** (never a whole directory) and commit the doc and the skill together.
+## Selected-source comparison
 
-## Classify the fact, then place it
+1. Confirm the document and comparison target. The operator chooses both. If both are missing, ask for both together before searching or running a check; if one is missing, ask for that input. A target may be a config directory, a skill directory, a `SKILL.md`, or another supported local text target.
+2. If the operator asks for help choosing a target, make a narrow suggestion from the selected document's references or a focused search. Name the candidate path and why it appears relevant, then ask the operator to confirm it. Do not compare against a guessed source.
+3. Treat the operator-confirmed target as the source for this comparison only; target selection does not prove authority for every fact. If it matters and the operator has not made that explicit, ask. Configuration can express desired state; runtime or an application UI/API can express observed state; documents may own decisions, navigation, history, and knowledge no other source can express. The CLI does not infer authority. If the requested source is unavailable to local text inspection, say so and do not substitute another source silently.
+4. Choose `--profile=config` for a config target or `--profile=skill` for a skill target. Run the bundled script from the selected installation:
 
-- **Derived**: restates config or live state (port tables, service inventories, IP lists). Generate
-  it or delete it. If nothing can generate it, it was a decision wearing a table.
-- **Decided**: why this and not the alternative. One ADR, linked, never restated.
-- **Vocabulary**: what a word means here. One glossary.
-- **Procedural**: how to do a thing. A **skill**, which loads on demand and fails visibly. Prose
-  drifts silently.
-- **Navigational**: where to look. `AGENTS.md`, a README. Every path must resolve.
+   ```bash
+   python3 .claude/skills/source-of-truth/scripts/sot.py diff <document-path> <confirmed-target-path> --profile=config
+   ```
 
-Records (plans, audits, changelogs, incident notes) are **append-only history**. Leave them as
-written, including claims that later became false. Annotate the top; never rewrite.
+   In the selected Claude Code project-install target, the intended script location is `.claude/skills/source-of-truth/scripts/sot.py`; discovery and invocation have not yet passed end-to-end testing. For another installation, resolve the script under this skill's actual installed directory; never assume `scripts/sot.py` is at the user's repository root. Do not pass shell angle-bracket placeholders literally; substitute the two confirmed paths.
+5. Report the target path, profile, every literal finding exactly as printed with its `document:line`, and the missing-fact count. Recommend that the operator review each finding. Do not infer what to edit.
+6. State that the command only checks selected literal facts. It does not prove semantic correctness, completeness, configuration behavior, or current runtime/UI state. Note any requested observed source the checker could not inspect.
+7. Confirm that neither selected input changed. The CLI is read-only; do not edit files as part of this check.
 
-## Where each fact lives
+If either path is invalid or the command exits `2`, report the exact path/usage error and ask for a valid input. If the output says an append-only record was skipped, do not call that a clean check; ask whether the operator explicitly wants that record checked with `--force` before retrying.
 
-| Layer | Holds | Must not hold |
-|---|---|---|
-| Config (compose, Nix, Ansible, proxy, DNS) | Ports, IPs, paths, versions: the truth | Rationale prose |
-| `AGENTS.md` / `CLAUDE.md` | Where things live, hard rules, pointers to skills | Ports, IPs, command sequences |
-| Skills | Procedures, verifiers, `references/` | Decisions, vocabulary |
-| `docs/` | ADRs, glossary, append-only records | Procedures, restated config |
-| Agent memory | The user's preferences and standing instructions | Infra state that config can answer |
-| Stack README | One line of purpose and a pointer | Anything the compose file says |
+## Interpret results safely
 
-How to derive instead of hand-write: `references/sources-and-secrets.md`.
+- Exit `0`: no missing selected literal facts detected. This is not proof the document is correct or complete. If the CLI says a record was skipped, the comparison did not run.
+- Exit `1`: the CLI found missing literal facts. Quote the finding kind, value, and exact `document:line`; name the confirmed target in your report. Recommend review, not automatic correction.
+- Exit `2`: invalid usage, missing path, or unsupported input. Do not broaden the search automatically.
+- Exit `3`: the document contains possible secret-shaped material. Report only the warning kind and `file:line`; never repeat or copy a value. A secret warning can accompany other findings, so inspect stderr regardless of exit code.
+- A low-confidence suppression note means some candidates were deliberately omitted. State that limitation when it affects the requested comparison; `--all` is a diagnostic view, not a claim that suppressed items are facts.
 
-## The four tests
+## Ownership and preservation
 
-- **Deletion**: delete the doc. Recoverable by reading config or running a command means it was
-  derived. If the reason vanished, it was a decision.
-- **Drift**: could two copies disagree within a month? Then one must go, now.
-- **Fact-diff**: before replacing a doc with a pointer, check that every path, host, IP, port, env
-  var, id and command it holds exists in the target. Missing facts mean the doc is unmigrated.
-- **Silence**: a subsystem the authority doc never mentions reads as absent. Silence is a claim.
+“One authoritative owner per fact” does not mean one physical copy. A document may own decisions, vocabulary, navigation, historical records, human-first instructions, and operational knowledge that config cannot express. A deliberate copy must state its purpose, canonical owner, and refresh rule. Configuration describes desired state; runtime/app UI/API describes observed state; docs own knowledge those systems cannot express.
 
-## Audit workflow
+Keep break-glass recovery instructions independently readable without an agent or the system being recovered. Do not treat a literal-check result as permission to stub or delete a document. Preserve unique meaning and links before any migration. A stub may retain a useful old path. Deletion requires explicit approval and preservation/link checks.
 
-1. **Inventory.** `python3 scripts/sot.py inventory <repo>` lists each doc with size, age, inbound
-   references, fact counts and possible secrets. It reads markdown only, prunes data and build
-   directories at the walk, and honours `.sotignore`. Survey everything; do not sample.
-2. **Classify** every doc: class, proper home, action. Leave records alone.
-3. **Secrets pass.** Any secret warning blocks that doc until it is scrubbed. Rotate anything that
-   was ever committed or synced.
-4. **Pair and fact-diff.** Pair docs with skills by topic, then run the fact-diff. Overlap scores
-   are a hint for finding candidates, never a verdict.
-5. **Drift check** against config (below).
-6. **Present the plan and wait for a yes.**
-7. **Migrate verbatim** (minus secrets) into the skill's `references/`, stub the doc, verify.
+## Optional human-reviewed change plan
 
-Stub the doc in ten lines: canonical skill, reference path, one line on what it holds, "do not add
-procedure here". Verify the target exists, then `git grep` the old path and walk every hit. Never
-condense while moving: the summary deletes the command that mattered.
+Only prepare this when the operator requests broader cleanup or change guidance. Keep the selected-source check read-only. Before editing anything, present a named plan containing:
 
-## Fact-diff, two uses
+- the exact document(s) and proposed action;
+- each fact's current owner and proposed authoritative owner;
+- whether a repeated copy is deliberate, its purpose, canonical owner, and refresh rule;
+- unique decisions, vocabulary, navigation, history, break-glass, and human-first content that must remain;
+- links and references to preserve or update;
+- secret findings by kind and line only, never by value;
+- verification and rollback steps.
 
-Two profiles mean you do not have to remember which kinds belong to which mode.
+Wait for explicit approval of that named plan before applying edits or deleting anything. Show the diff and verification afterward. Never auto-commit, schedule the work, create issues, or retain a report as part of the focused check.
 
-```bash
-# Is the doc redundant with the skill? Exit 0 = nothing missing: necessary, not sufficient.
-python3 scripts/sot.py diff docs/dns-runbook.md skills/network-ops --profile=skill
+## First-run proof and compatibility
 
-# Has the doc drifted from the config? A config dir holds no commands and no commit ids.
-python3 scripts/sot.py diff docs/dns-runbook.md /srv/stack --profile=config
-```
-
-`--profile=skill` checks all seven kinds. `--profile=config` checks path, host, ip, port and env
-only, because a config directory cannot hold a command line or a container id, and reporting those
-as missing is drift that does not exist. `--kinds=a,b` overrides either profile.
-
-Exit codes: `0` clean, `1` missing facts, `2` usage error, `3` the doc holds something that looks
-like a secret. Exit 1 lists the missing facts one per line, each with the `doc:line` it came from.
-
-**Precision beats recall.** A number that cannot be told apart from a status code, a clock or an
-IPv6 octet is suppressed, and the count of suppressed candidates is printed so a clean exit is
-never silent. Read that count; `--all` shows what was held back when you want to audit the
-classifier. In drift mode a missing fact is stale, or lives outside that directory: decide, do not
-auto-fix.
-
-## Scope
-
-Built for homelabs and small infra repos where an agent loads skills on demand. It fits less well
-when documentation is the product, when a procedure must stay readable without any agent, or when
-nobody reads the skill library: there duplication costs less than losing the narrative. The
-doctrine is about where a fact lives, not about deleting prose.
-
-## Anti-patterns
-
-- **Deleting on similarity.** In the one repo where this was measured (n=1), true duplicate pairs
-  shared under 10% of their tokens. Treat the score as a hint.
-- **Condensing during a move.** The compression is where the procedure dies.
-- **Stubbing without a fact-diff.** A pointer to a skill that lacks the command is worse than the
-  duplicate: it looks authoritative and cannot be followed.
-- **Two histories.** A raw log and a curated summary are fine only if the doc declares which is which.
-- **Restating the environment.** A doc that copies a compose file or `--help` output has no invalidation.
-- **A command without its verifier.** Add the check, or demote the doc to a decision record.
-- **Migrating a secret.** Verbatim does not apply to credentials.
+The human quickstart is in `README.md`; the minimal one-mismatch fixture is under `tests/fixtures/first-check/`. The selected first end-to-end test target is Claude Code `2.1.49` using the project-level location `.claude/skills/source-of-truth/`; this combination is still unverified and is not a support claim. Do not claim support for this or other client/version/install combinations until the exact discovery and invocation flow passes.
 
 ## References
 
-- `references/sources-and-secrets.md`: where each kind of homelab fact is generated from, the
-  scrub-first procedure and what the scanner catches, recovery docs that must outlive the agent
-  host, and the plan format for step 6.
-- `references/examples.md`: one invented consolidation with real script output, and a real
-  14-pair run with numbers.
+- `scripts/sot.py`: deterministic, read-only comparison engine and separate Markdown inventory command.
+- `references/examples.md`: generated first-run output from the synthetic one-mismatch fixture.
+- `references/sources-and-secrets.md`: optional source ownership and secret-handling guidance for an explicitly requested, human-reviewed plan.

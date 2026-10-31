@@ -777,8 +777,8 @@ USAGE = """usage:
   sot.py diff <doc.md> <skill-dir | SKILL.md | config-dir> [--profile=skill|config]
               [--kinds=KINDS] [--all] [--quiet] [--force]
 
-One home per fact: inventory finds the docs, diff checks that a fact survives a move.
-Exit codes: 0 clean, 1 missing facts, 2 usage, 3 secrets."""
+One selected document and one selected target: report literal facts absent from the target.
+Exit codes: 0 no missing selected facts, 1 findings, 2 usage, 3 secret-shaped content."""
 
 
 def main(argv: list[str]) -> int:
