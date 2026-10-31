@@ -7,6 +7,7 @@ Every extractor kind gets a case that must be flagged and a case that must not.
 Standard library only; no network, no install step.
 """
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -127,6 +128,85 @@ CASES = [
      "Read `the config file`, `docs below` and `see above`.\n",
      {"SKILL.md": "Nothing here.\n"},
      set()),
+
+    # --- fix 1: the skill's own name must not swallow facts
+    ("skill name does not swallow facts",
+     "Backups go to /srv/backup/daily.\n\n```bash\nrestic -r /srv/backup backup --tag nightly\n```\n",
+     {"SKILL.md": "Unrelated.\n"},
+     {("path", "/srv/backup/daily"), ("path", "/srv/backup"),
+      ("command", "restic -r /srv/backup backup --tag nightly")},
+     {"skill_name": "backup"}),
+    ("a pointer to the skill's own path is exempt",
+     "Moved to ~/.claude/skills/backup-ops/references/runbook.md.\n",
+     {"SKILL.md": "Nothing.\n"},
+     set(),
+     {"skill_name": "backup-ops"}),
+
+    # --- fix 2: IPs in urls, CIDR, sentence-final periods
+    ("ip inside a url",
+     "Open http://192.168.1.20:8006/ui now.\n",
+     {"SKILL.md": "Nothing here.\n"},
+     {("ip", "192.168.1.20"), ("port", "8006")}),
+    ("ip in cidr notation",
+     "The LAN is 192.168.1.0/24 today.\n",
+     {"SKILL.md": "Nothing here.\n"},
+     {("ip", "192.168.1.0/24")}),
+    ("ip before a sentence-final period",
+     "The NAS is at 192.168.1.10.\n",
+     {"SKILL.md": "Nothing here.\n"},
+     {("ip", "192.168.1.10")}),
+    ("cidr present",
+     "LAN 192.168.1.0/24.\n",
+     {"SKILL.md": "LAN 192.168.1.0/24.\n"},
+     set()),
+    ("cidr with a different prefix is a different fact",
+     "LAN 192.168.1.0/24.\n",
+     {"SKILL.md": "LAN 192.168.1.0/16.\n"},
+     {("ip", "192.168.1.0/24")}),
+
+    # --- fix 3: port mappings are ports, clock times are not
+    ("port mappings in a fence",
+     "```yaml\nports:\n  - \"81:81\"\n  - \"22:22\"\n```\n",
+     {"SKILL.md": "Nothing here.\n"},
+     {("port", "81"), ("port", "22")}),
+    ("quoted mapping that looks like a time",
+     "Map \"22:22\" for ssh.\n",
+     {"SKILL.md": "Nothing here.\n"},
+     {("port", "22")}),
+    ("mapping 80:80 is not a time",
+     "Publish `80:80` and 443:443.\n",
+     {"SKILL.md": "Nothing here.\n"},
+     {("port", "80"), ("port", "443")}),
+    ("clock time with seconds is not a port",
+     "Started at 12:30:45 sharp.\n",
+     {"SKILL.md": "Nothing here.\n"},
+     set()),
+    ("single-digit clock time is not a port",
+     "Backup runs at 9:30 each night.\n",
+     {"SKILL.md": "Nothing here.\n"},
+     set()),
+    ("mapping present in the skill",
+     "```yaml\nports:\n  - \"81:81\"\n```\n",
+     {"SKILL.md": "Admin UI mapping 81:81.\n"},
+     set()),
+
+    # --- fix 4: trailing comments and continuation lines
+    ("trailing comment is not part of a command",
+     "```bash\ndocker compose pull   # update images\n```\n",
+     {"SKILL.md": "Run `docker compose pull`.\n"},
+     set()),
+    ("continued command is checked whole",
+     "```bash\ndocker run -d \\\n  --name foo nginx\n```\n",
+     {"SKILL.md": "Nothing here.\n"},
+     {("command", "docker run -d --name foo nginx")}),
+    ("continued command present when the skill wraps it too",
+     "```bash\ndocker run -d \\\n  --name foo nginx\n```\n",
+     {"SKILL.md": "```bash\ndocker run -d \\\n  --name foo nginx\n```\n"},
+     set()),
+    ("continued command missing its tail is flagged",
+     "```bash\ndocker run -d \\\n  --name foo nginx\n```\n",
+     {"SKILL.md": "docker run -d\n"},
+     {("command", "docker run -d --name foo nginx")}),
 ]
 
 SMOKE_DOC = """Node edge.example.net at 10.0.0.5:9000.
@@ -150,34 +230,126 @@ SMOKE_EXPECTED = {
 }
 
 
-def run_case(doc_text: str, files: dict[str, str]) -> tuple[int, set[tuple[str, str]], str]:
+def run_script(doc_text: str, files: dict[str, str], skill_name: str = "skill",
+               extra: tuple[str, ...] = ()) -> tuple[int, str, str]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         doc = tmp_path / "doc.md"
         doc.write_text(doc_text)
-        skill = tmp_path / "skill"
+        skill = tmp_path / skill_name
         skill.mkdir()
         for rel, content in files.items():
             target = skill / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), str(doc), str(skill)],
+            [sys.executable, str(SCRIPT), str(doc), str(skill), *extra],
             capture_output=True, text=True,
         )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def parse_facts(stdout: str) -> set[tuple[str, str]]:
     found = set()
-    for line in proc.stdout.splitlines():
+    for line in stdout.splitlines():
         parts = line.split(None, 1)
         if len(parts) == 2 and parts[0] in KINDS:
             found.add((parts[0], parts[1].strip()))
-    return proc.returncode, found, proc.stdout + proc.stderr
+    return found
+
+
+def run_case(doc_text: str, files: dict[str, str], **opts) -> tuple[int, set[tuple[str, str]], str]:
+    rc, out, err = run_script(doc_text, files, **opts)
+    return rc, parse_facts(out), out + err
+
+
+def secret_checks() -> list[str]:
+    """Secrets are warned about on stderr, by line, and never echoed anywhere."""
+    fake_token = "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"      # built at runtime so no
+    fake_key = "-----BEGIN " + "OPENSSH PRIVATE KEY-----"           # scanner flags this file
+    doc = (
+        "Set WEBPASSWORD=hunter2hunter2 before start.\n"
+        f"The token {fake_token} was pasted here.\n"
+        f"{fake_key}\n"
+        "Backups use postgres://admin:s3cretpass@db.lan/app nightly.\n"
+        "password: ${DB_PASSWORD} is fine.\n"
+        "api_key=<your key> is fine.\n"
+    )
+    rc, out, err = run_script(doc, {"SKILL.md": "Nothing here.\n"})
+    failures = []
+    flagged = {int(m) for m in re.findall(r":(\d+)$", err, re.M)}
+    if flagged != {1, 2, 3, 4}:
+        failures.append(f"secrets: expected warnings on lines 1-4, got {sorted(flagged)}\n{err}")
+    if "possible secret" not in err:
+        failures.append("secrets: warning text missing")
+    for leaked in ("hunter2", fake_token, "s3cretpass", "OPENSSH"):
+        if leaked in out + err:
+            failures.append(f"secrets: value leaked into output: {leaked[:6]}...")
+    if parse_facts(out):
+        failures.append(f"secrets: flagged lines must be left out of the fact checks, got {parse_facts(out)}")
+    if rc != 0:
+        failures.append(f"secrets: expected exit 0 with only secret lines, got {rc}\n{out}{err}")
+    return failures
+
+
+def kinds_checks() -> list[str]:
+    doc = "Node 10.0.0.5 and /srv/x/y and `systemctl restart foo`.\n"
+    files = {"SKILL.md": "Nothing here.\n"}
+    failures = []
+    rc, out, _ = run_script(doc, files, extra=("--kinds=ip",))
+    if rc != 1 or parse_facts(out) != {("ip", "10.0.0.5")}:
+        failures.append(f"--kinds=ip: expected only the ip, got {parse_facts(out)} rc={rc}")
+    rc, out, _ = run_script(doc, files, extra=("--kinds=path,ip",))
+    if parse_facts(out) != {("ip", "10.0.0.5"), ("path", "/srv/x/y")}:
+        failures.append(f"--kinds=path,ip: wrong facts {parse_facts(out)}")
+    rc, _, err = run_script(doc, files, extra=("--kinds=bogus",))
+    if rc != 2:
+        failures.append(f"--kinds=bogus: expected usage error 2, got {rc}")
+    return failures
+
+
+def inventory_checks() -> list[str]:
+    inventory = SCRIPT.parent / "doc-inventory.py"
+    failures = []
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        files = {
+            "docs/a.md": "See docs/b.md. Node 10.0.0.5:9000.\n```bash\nsystemctl restart foo\n```\n",
+            "docs/b.md": "WEBPASSWORD=hunter2hunter2\n",
+            "docs/orphan.md": "Nothing links here.\n",
+            "skills/x/SKILL.md": "Details in a.md.\n",
+            ".git/hidden.md": "Must be skipped.\n",
+        }
+        for rel, content in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(content)
+        proc = subprocess.run([sys.executable, str(inventory), str(root)],
+                              capture_output=True, text=True)
+    rows = {}
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if parts and parts[0].isdigit() and len(parts) == 8:
+            rows[parts[7]] = [int(x) for x in parts[:7]]
+    if proc.returncode != 0 or set(rows) != {"docs/a.md", "docs/b.md", "docs/orphan.md", "skills/x/SKILL.md"}:
+        failures.append(f"inventory: wrong rows {sorted(rows)} rc={proc.returncode}\n{proc.stdout}{proc.stderr}")
+        return failures
+    lines, age, inbound, ips, ports, cmds, secrets = range(7)
+    if rows["docs/a.md"][ips:cmds + 1] != [1, 1, 1] or rows["docs/a.md"][inbound] != 1:
+        failures.append(f"inventory: docs/a.md row wrong: {rows['docs/a.md']}")
+    if rows["docs/b.md"][inbound] != 1 or rows["docs/b.md"][secrets] != 1:
+        failures.append(f"inventory: docs/b.md row wrong: {rows['docs/b.md']}")
+    if rows["docs/orphan.md"][inbound] != 0:
+        failures.append(f"inventory: orphan should have no inbound references: {rows['docs/orphan.md']}")
+    if "hunter2" in proc.stdout or proc.stdout.index("docs/a.md") > proc.stdout.index("docs/orphan.md"):
+        failures.append("inventory: secret leaked or rows not sorted by facts stated")
+    return failures
 
 
 def main() -> int:
     failures: list[str] = []
 
-    for name, doc, files, expected in CASES:
-        rc, found, out = run_case(doc, files)
+    for name, doc, files, expected, *opt in CASES:
+        rc, found, out = run_case(doc, files, **(opt[0] if opt else {}))
         want_rc = 1 if expected else 0
         if rc != want_rc:
             failures.append(f"{name}: expected exit {want_rc}, got {rc}\n{out}")
@@ -201,6 +373,12 @@ def main() -> int:
     else:
         print(f"PASS smoke flags {len(SMOKE_EXPECTED)} facts")
 
+    for label, check in (("secrets", secret_checks), ("--kinds", kinds_checks), ("inventory", inventory_checks)):
+        found_failures = check()
+        failures.extend(found_failures)
+        if not found_failures:
+            print(f"PASS {label}")
+
     if failures:
         print()
         for f in failures:
@@ -208,7 +386,7 @@ def main() -> int:
         print(f"\n{len(failures)} failure(s)")
         return 1
 
-    print(f"\n{len(CASES) + 1} case(s) passed")
+    print(f"\n{len(CASES) + 4} check(s) passed")
     return 0
 
 

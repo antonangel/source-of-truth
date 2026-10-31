@@ -1,39 +1,54 @@
 #!/usr/bin/env python3
-"""List the environment-specific facts a doc holds that a skill does not.
+"""List the environment-specific facts a doc holds that a target does not.
 
 Usage:
-    fact-diff.py <doc.md> <skill-dir-or-SKILL.md> [--quiet]
+    fact-diff.py <doc.md> <skill-dir | SKILL.md | any-directory> [--kinds=a,b] [--quiet]
+
+The target is normally a skill (is the doc redundant?) or a config directory (has the doc
+drifted?). Every text file under it is searched.
+
+Fact kinds: path, host, ip, port, env, id, command. `--kinds` restricts the check, e.g.
+`--kinds=path,host,ip,port,env,id` when the target is a config directory, because config
+files do not contain command lines.
+
+Output: one "kind  value" line per missing fact on stdout, then a summary line.
+Secret warnings go to stderr as "warning: possible secret (kind) at file:line".
 
 Exit codes:
     0  no missing facts detected
     1  facts are missing: migrate them into the skill's references/ before stubbing
     2  usage error
 
-**Exit 0 is necessary, not sufficient.** The script proves the skill contains every
-path, host, ip, id, env var, port and command line the doc states. It cannot tell you
-the skill arranges them in a usable procedure, that the commands still work, or that the
-doc's prose carried no meaning. Read the pair before you stub.
+**Exit 0 is necessary, not sufficient.** It proves the target contains every fact the doc
+states. It cannot tell you the target arranges them into a usable procedure, that the
+commands still work, or that the doc's prose carried no meaning. Read the pair first.
 
-Why this exists: text similarity lies. Two docs describing one procedure in different
-words can share a small fraction of their tokens while carrying facts the skill has
-never seen. Compare facts, not prose.
-
-Standard library only.
+Secrets: a doc line that looks like a secret is reported by line and kind, its value is
+never printed, and the line is left out of the fact checks. Scrub it, then run again.
+This is a tripwire for docs, not a history scanner.
 
 Known limitations:
-- Config keys and parameters are not extracted (only env vars of the form NAME=value).
-- Exit 0 is necessary, not sufficient: the script compares facts, not usefulness.
-- Inline backtick prose heuristic uses a stopword head list; a phrase whose first
-  token is not a stopword (e.g. "run tests") may be misclassified as a command.
-  Fenced blocks are unaffected.
-- A doc command that is a prefix of a longer skill command counts as present when
-  followed by whitespace/args (boundary blocks mid-token continuation only).
-- Port context matching is textual; a bare number in prose is not treated as a port.
+- Config keys, parameters, image names and volume mappings are not extracted; env vars
+  only in the form NAME=value. IPv6 and MAC addresses are not extracted.
+- Inline backtick prose is filtered with a stopword list; a phrase whose first word is not
+  a stopword (for example "run tests") can be mistaken for a command. Fenced blocks are
+  unaffected.
+- A doc command that is a prefix of a longer target command counts as present when the
+  next character is whitespace (the boundary only blocks mid-token continuation).
+- Port matching needs a port context in the target (":N", "port N", "listen N", "N:M");
+  a bare number in prose does not count.
+- "HH:MM" with HH <= 23 and MM <= 59 is read as a clock time in prose, and as a port
+  mapping inside a fenced block, quotes or backticks.
+- The secret scan errs toward warning: a phrase such as "password: stored" can trip it.
+
+Python 3.10+, standard library only.
 """
 
 import re
 import sys
 from pathlib import Path
+
+KINDS = ("path", "host", "ip", "port", "env", "id", "command")
 
 TEXT_EXT = {
     ".md", ".markdown", ".txt", ".rst", ".py", ".sh", ".bash", ".zsh", ".fish",
@@ -52,13 +67,11 @@ FILE_EXT = {
 
 PATH_RE = re.compile(r"(?<![\w./~-])(?:~|/)[A-Za-z0-9_.\-/]{3,}(?![\w./~-])")
 
+_OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
+# An IPv4 address, optionally with a CIDR prefix. A "/" may precede it (a URL) and a
+# sentence-final "." may follow it; a longer dotted token on either side is not an address.
 IPV4_RE = re.compile(
-    r"(?<![\w./-])"
-    r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
-    r"\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
-    r"\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
-    r"\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
-    r"(?![\w./-])"
+    rf"(?<![\w.-])({_OCTET}(?:\.{_OCTET}){{3}}(?:/(?:3[0-2]|[12]?[0-9]))?)(?![\w-])(?!\.\w)"
 )
 HOST_RE = re.compile(
     r"(?<![\w.-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24})"
@@ -81,25 +94,58 @@ INLINE_STOPWORDS = {
     "read", "view", "check", "note", "above", "below", "here", "there",
 }
 
+CRED_RE = re.compile(
+    r"\w*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|apikey|psk|private[_-]?key"
+    r"|auth[_-]?key)\w*[\"']?\s*[:=]\s*[\"']?(<[^>\n]*>|[^\s\"',;]+)",
+    re.I,
+)
+PLACEHOLDER_RE = re.compile(
+    r"^(?:<[^>]*>|\$\{?\w*\}?|\{\{.*|\.{2,}|x{3,}|\*{3,}|changeme|change-me|your[-_\w]*"
+    r"|example|redacted|placeholder|todo|none|null|true|false|required|secret|password|token)$",
+    re.I,
+)
+SECRET_PATTERNS = (
+    ("private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("token", re.compile(
+        r"\b(?:ghp_|gho_|ghs_|github_pat_|glpat-|xox[baprs]-|tskey-[a-z]+-)[A-Za-z0-9_-]{8,}"
+        r"|\bAKIA[0-9A-Z]{16}\b|\bsk-[A-Za-z0-9_-]{20,}")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
+    ("url credentials", re.compile(r"://[^/\s:@]+:[^/\s@]+@")),
+)
+
 
 def norm(text: str) -> str:
     text = re.sub(r"[`*'\u2019\"]", "", text.lower())
     return re.sub(r"\s+", " ", text)
 
 
+def secret_lines(text: str) -> list[tuple[int, str]]:
+    """Return (line number, kind) for each line that looks like it holds a secret."""
+    found = []
+    for number, line in enumerate(text.splitlines(), 1):
+        kind = next((k for k, rx in SECRET_PATTERNS if rx.search(line)), None)
+        if kind is None:
+            for m in CRED_RE.finditer(line):
+                value = m.group(1).strip("\"'")
+                if len(value) >= 4 and not PLACEHOLDER_RE.match(value):
+                    kind = "credential assignment"
+                    break
+        if kind:
+            found.append((number, kind))
+    return found
+
+
 def is_file_ext(candidate: str) -> bool:
-    parts = candidate.split(".")
-    if not parts:
-        return False
-    return parts[-1] in FILE_EXT
+    return candidate.split(".")[-1] in FILE_EXT
 
 
 def looks_like_version(candidate: str) -> bool:
-    return bool(re.fullmatch(r"^[vV]?(0|[1-9]\d*)(\.(0|[1-9]\d*)){0,2}$", candidate))
+    return bool(re.fullmatch(r"[vV]?(0|[1-9]\d*)(\.(0|[1-9]\d*)){0,2}", candidate))
 
 
 def as_command(line: str) -> str | None:
-    line = line.strip().lstrip("$> ").strip().rstrip(".,;:")
+    line = line.strip().lstrip("$> ").strip()
+    line = re.sub(r"\s+#.*$", "", line).rstrip(".,;:")  # drop a trailing comment
     if not line or line.startswith(("#", "//", "-", "*")):
         return None
     if re.match(r"^[dl-][rwx-]{8,}\s", line):  # ls -l output, not a command
@@ -114,15 +160,28 @@ def as_command(line: str) -> str | None:
 
 
 def fenced_commands(text: str) -> set[str]:
-    out, in_fence = set(), False
+    out: set[str] = set()
+    in_fence, pending = False, ""
+
+    def flush(candidate: str) -> None:
+        cmd = as_command(candidate)
+        if cmd:
+            out.add(cmd)
+
     for line in text.splitlines():
         if line.strip().startswith("```"):
-            in_fence = not in_fence
+            if pending:
+                flush(pending)
+            in_fence, pending = not in_fence, ""
             continue
-        if in_fence:
-            cmd = as_command(line)
-            if cmd:
-                out.add(cmd)
+        if not in_fence:
+            continue
+        stripped = line.rstrip()
+        if stripped.endswith("\\"):  # a continued command is one command
+            pending += stripped[:-1].strip() + " "
+            continue
+        flush(pending + stripped.strip() if pending else line)
+        pending = ""
     return out
 
 
@@ -130,25 +189,68 @@ def inline_commands(text: str) -> set[str]:
     out = set()
     for m in BACKTICK_RE.finditer(text):
         cmd = as_command(m.group(1))
-        if not cmd:
-            continue
-        head = cmd.split()[0].lower()
-        if head in INLINE_STOPWORDS:
-            continue
-        out.add(cmd)
+        if cmd and cmd.split()[0].lower() not in INLINE_STOPWORDS:
+            out.add(cmd)
     return out
 
 
 def is_hostname(candidate: str) -> bool:
-    if is_file_ext(candidate):
+    if is_file_ext(candidate) or looks_like_version(candidate):
         return False
-    if re.fullmatch(r"[\d.]+\b", candidate):
-        return False
-    if looks_like_version(candidate):
-        return False
-    if re.fullmatch(r"\d+:\d+\b", candidate):
-        return False
-    return True
+    return not re.fullmatch(r"[\d.]+", candidate)
+
+
+def fence_spans(text: str) -> list[tuple[int, int]]:
+    spans, offset, start = [], 0, None
+    for line in text.splitlines(keepends=True):
+        if line.strip().startswith("```"):
+            if start is None:
+                start = offset + len(line)
+            else:
+                spans.append((start, offset))
+                start = None
+        offset += len(line)
+    if start is not None:
+        spans.append((start, offset))
+    return spans
+
+
+def in_code_context(text: str, pos: int, fences: list[tuple[int, int]]) -> bool:
+    if any(start <= pos < end for start, end in fences):
+        return True
+    return pos > 0 and text[pos - 1] in "\"'`"
+
+
+def looks_like_clock(hour: str, minute: str) -> bool:
+    return (hour.isdigit() and len(hour) <= 2 and int(hour) <= 23
+            and len(minute) == 2 and int(minute) <= 59)
+
+
+def find_ports(text: str) -> set[str]:
+    fences = fence_spans(text)
+    masked = IPV4_RE.sub(lambda m: "x" * len(m.group(0)), text)  # same offsets, no octets
+    ports: set[str] = set()
+    for m in PORT_RE.finditer(masked):
+        hour = minute = None
+        hour_start = 0
+        if m.group(4) is not None:                    # N:M, a mapping or a clock time
+            hour, minute, hour_start = m.group(4), m.group(5), m.start()
+            values = (m.group(4), m.group(5))
+        elif m.group(1) is not None:                  # :N
+            k = m.start()
+            while k > 0 and masked[k - 1].isdigit():
+                k -= 1
+            if k > 0 and masked[k - 1] == ":":
+                continue                              # 12:30:45 or an address, not a port
+            hour, minute, hour_start = masked[k:m.start()], m.group(1), k
+            values = (m.group(1),)
+        else:                                         # "port N" or "listen N"
+            values = tuple(g for g in (m.group(2), m.group(3)) if g)
+        if hour is not None and looks_like_clock(hour, minute) \
+                and not in_code_context(text, hour_start, fences):
+            continue
+        ports.update(v for v in values if int(v) <= 65535)
+    return ports
 
 
 def extract(text: str) -> dict[str, set[str]]:
@@ -168,41 +270,14 @@ def extract(text: str) -> dict[str, set[str]]:
         if is_hostname(candidate):
             hosts.add(candidate.lower())
 
-    ips = {m.group(0) for m in IPV4_RE.finditer(text)}
-
-    ports = set()
-    for m in PORT_RE.finditer(text):
-        if m.group(1) is not None:
-            value = m.group(1)
-            colon_idx = m.start()
-            k = colon_idx - 1
-            while k >= 0 and text[k].isdigit():
-                k -= 1
-            hour = text[k + 1:colon_idx]
-            prev_char = text[k] if k >= 0 else ""
-            is_time = (
-                hour.isdigit()
-                and 1 <= len(hour) <= 2
-                and len(value) == 2
-                and (prev_char == "" or prev_char.isspace() or prev_char in "([")
-            )
-            if not is_time:
-                ports.add(value)
-        else:
-            if m.group(4) is not None and m.group(5) is not None:
-                if re.fullmatch(r"\d{1,2}:\d{2}", m.group(0)):
-                    continue
-            for g in m.groups()[1:]:
-                if g is not None:
-                    ports.add(g)
-
-    envs = {m.group(1) for m in ENV_RE.finditer(text)}
-    ids = set(ID_RE.findall(text.lower()))
-    commands = fenced_commands(text) | inline_commands(text)
-
     return {
-        "path": paths, "host": hosts, "ip": ips, "port": ports,
-        "env": envs, "id": ids, "command": commands,
+        "path": paths,
+        "host": hosts,
+        "ip": {m.group(1) for m in IPV4_RE.finditer(text)},
+        "port": find_ports(text),
+        "env": {m.group(1) for m in ENV_RE.finditer(text)},
+        "id": set(ID_RE.findall(text.lower())),
+        "command": fenced_commands(text) | inline_commands(text),
     }
 
 
@@ -215,22 +290,21 @@ def skill_corpus(target: Path) -> str:
         try:
             if p.stat().st_size > MAX_FILE:
                 continue
-            chunks.append(p.read_text(errors="ignore"))
+            text = p.read_text(errors="ignore")
         except OSError:
             continue
+        chunks.append(re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", text))  # join continued lines
     return norm("\n".join(chunks))
 
 
 def present(corpus: str, value: str, kind: str) -> bool:
     needle = re.escape(norm(value))
     if kind == "path":
-        return re.search(
-            rf"(?<![\w./~-]){needle}(?![\w/_-])(?!\.[\w])", corpus
-        ) is not None
+        return re.search(rf"(?<![\w./~-]){needle}(?![\w/_-])(?!\.[\w])", corpus) is not None
     if kind == "host":
         return re.search(rf"(?<![\w.-]){needle}(?![\w-])(?!\.[\w])", corpus) is not None
     if kind == "ip":
-        return re.search(rf"(?<![\w.]){needle}(?![\w.])", corpus) is not None
+        return re.search(rf"(?<![\w.-]){needle}(?![\w-])(?!\.\w)", corpus) is not None
     if kind == "env":
         return re.search(rf"(?<!\w){needle}=", corpus) is not None
     if kind == "port":
@@ -248,30 +322,56 @@ def present(corpus: str, value: str, kind: str) -> bool:
     return re.search(rf"(?<!\w){needle}(?!\w)", corpus) is not None
 
 
-def main(argv: list[str]) -> int:
-    args = [a for a in argv[1:] if not a.startswith("--")]
-    quiet = "--quiet" in argv
-    if len(args) != 2:
-        print("usage: fact-diff.py <doc> <skill-dir-or-SKILL.md> [--quiet]", file=sys.stderr)
-        return 2
+def parse_args(argv: list[str]):
+    paths: list[str] = []
+    quiet, kinds = False, None
+    for arg in argv[1:]:
+        if arg == "--quiet":
+            quiet = True
+        elif arg.startswith("--kinds="):
+            kinds = [k.strip() for k in arg.split("=", 1)[1].split(",") if k.strip()]
+            if not kinds or any(k not in KINDS for k in kinds):
+                return None
+        elif arg.startswith("--"):
+            return None
+        else:
+            paths.append(arg)
+    return (paths, quiet, kinds) if len(paths) == 2 else None
 
-    doc, target = Path(args[0]), Path(args[1])
+
+def main(argv: list[str]) -> int:
+    parsed = parse_args(argv)
+    if parsed is None:
+        print("usage: fact-diff.py <doc> <skill-dir-or-SKILL.md-or-dir> [--kinds=a,b] [--quiet]\n"
+              f"kinds: {', '.join(KINDS)}", file=sys.stderr)
+        return 2
+    (doc_arg, target_arg), quiet, kinds = parsed
+
+    doc, target = Path(doc_arg), Path(target_arg)
     for p in (doc, target):
         if not p.exists():
             print(f"not found: {p}", file=sys.stderr)
             return 2
 
     doc_text = doc.read_text(errors="ignore")
-    corpus = skill_corpus(target)
-    skill_name = (target.parent if target.name == "SKILL.md" else target).name
+    secrets = secret_lines(doc_text)
+    for number, kind in secrets:
+        print(f"warning: possible secret ({kind}) at {doc}:{number}", file=sys.stderr)
+    flagged = {number for number, _ in secrets}
+    clean = "\n".join("" if i in flagged else line
+                      for i, line in enumerate(doc_text.splitlines(), 1))
 
-    facts = extract(doc_text)
+    corpus = skill_corpus(target)
+    skill_name = (target.parent if target.name == "SKILL.md" else target).resolve().name
+    # A pointer line names the skill's own path. That is its destination, not a missing fact.
+    pointer = re.compile(rf"(?<![\w-])skills/{re.escape(skill_name)}(?![\w-])")
+
+    facts = {k: v for k, v in extract(clean).items() if kinds is None or k in kinds}
     total = sum(len(v) for v in facts.values())
     missing: list[tuple[str, str]] = []
-
     for kind, values in facts.items():
         for value in sorted(values):
-            if skill_name in value:
+            if pointer.search(value):
                 continue
             if not present(corpus, value, kind):
                 missing.append((kind, value))
