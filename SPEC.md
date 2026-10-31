@@ -83,6 +83,35 @@ values while preserving its realistic structure.
 - New fact kinds or new secret patterns.
 - Removing the doctrine; only its packaging shrinks.
 
+## Implementation notes (from code grill, 2026-10-30)
+
+These were found by comparing the spec against the actual repo. They must be handled in the
+tickets; do not treat them as surprises mid-implementation.
+
+1. **Test-path migration is required.** `tests/run_tests.py` hardcodes
+   `SCRIPT = …/fact-diff.py`, `inventory = SCRIPT.parent / "doc-inventory.py"`, and reads
+   `references/before-after-homelab.md`. The golden test also asserts 3 command blocks in that
+   file. These paths must move to `sot.py` and `references/examples.md` in the same PR.
+2. **SKILL.md references old names.** It cites `scripts/doc-inventory.py`, `scripts/fact-diff.py`,
+   and `references/before-after-homelab.md`. Update to `scripts/sot.py` and
+   `references/examples.md`.
+3. **Golden example command string.** The before/after doc shows
+   `$ python3 scripts/fact-diff.py …`. Decision: switch examples to `sot.py diff` and update
+   the test regex to `scripts/(?:fact-diff\.py|sot\.py)` (or the new name only). Keep the
+   output comparison unchanged.
+4. **CI entry point.** `.github/workflows/test.yml` runs `python3 tests/run_tests.py`. Keep
+   `run_tests.py` as the entry point (no CI change) and update its internal paths; do not rename
+   the test file.
+5. **Shim importability.** `sot.py` must be importable without side effects (guard `main`).
+   Preserve module-level functions (`extract`, `present`, `skill_corpus`, `secret_lines`,
+   `find_ports`, etc.) so shims can `import sot`. Move the `doc-inventory` importlib logic
+   into `sot.py`.
+6. **Pointer exemption.** Already matches the `skills/<name>` prefix, so
+   `skills/source-of-truth/references/examples.md` stays exempt. Add a test case for it.
+7. **README consistency test** (`readme_checks`) enforces: fact kinds match `fd.KINDS`, no
+   restated SKILL.md lines, all relative links resolve, <= 70 lines. Any README rewrite must
+   satisfy these.
+
 ## Further Notes
 
 - Baseline `doc-inventory` numbers for the repo should be captured before the shrinkage and
