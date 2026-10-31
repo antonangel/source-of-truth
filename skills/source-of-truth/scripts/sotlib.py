@@ -829,8 +829,14 @@ AuditRow = namedtuple("AuditRow", "cls facts inbound candidate command verdict")
 CLASS_ORDER = {name: index for index, name in enumerate(DOC_CLASSES)}
 
 
-def _dir_corpus(path: Path, patterns: list[str], budget: int = 4_000_000) -> str:
-    """Concatenated text of one candidate target directory, pruned like the census."""
+def _dir_corpus(path: Path, patterns: list[str], include_markdown: bool = False,
+                budget: int = 4_000_000) -> str:
+    """Concatenated text of one candidate target directory, pruned like the census.
+
+    Markdown is excluded unless the directory holds skills. `diff` compares a document against
+    config; another document is not a candidate for its own facts, and the root directory always
+    contains the document being ranked — which would make every row pair with `.`.
+    """
     if not path.is_dir():
         return ""
     chunks: list[str] = []
@@ -839,7 +845,10 @@ def _dir_corpus(path: Path, patterns: list[str], budget: int = 4_000_000) -> str
         dirnames[:] = sorted(d for d in dirnames
                              if d.lower() not in SKIP_DIRS and not ignored_name(d, patterns))
         for name in sorted(filenames):
-            if Path(name).suffix.lower() not in TEXT_EXT:
+            suffix = Path(name).suffix.lower()
+            if suffix not in TEXT_EXT:
+                continue
+            if not include_markdown and suffix in (".md", ".markdown"):
                 continue
             file_path = Path(dirpath) / name
             rel = file_path.relative_to(path).as_posix()
@@ -856,6 +865,13 @@ def _dir_corpus(path: Path, patterns: list[str], budget: int = 4_000_000) -> str
             if size > budget:
                 return "\n".join(chunks)
     return "\n".join(chunks)
+
+
+def _holds_skills(path: Path) -> bool:
+    """A directory holding SKILL.md files is a legitimate document target, so keep its markdown."""
+    if not path.is_dir():
+        return False
+    return bool(list(path.glob("SKILL.md"))) or bool(list(path.glob("*/SKILL.md")))
 
 
 def _candidate_dirs(root: Path) -> list[str]:
@@ -881,7 +897,8 @@ def audit_rows(root: Path, script_ref: str) -> tuple[list[AuditRow], dict[str, i
     counts = inbound_counts(docs)
 
     candidates = _candidate_dirs(root)
-    cand_facts = {c: extract(_dir_corpus(root / c, patterns)) for c in candidates}
+    cand_facts = {c: extract(_dir_corpus(root / c, patterns, _holds_skills(root / c)))
+                  for c in candidates}
 
     rows: list[AuditRow] = []
     summary = {"records": 0, "stubs": 0, "paired": 0}
