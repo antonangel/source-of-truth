@@ -121,6 +121,26 @@ def first_line_number(text: str, value: str) -> int:
             return number
     return 1
 
+RECORD_PATH_PARTS = {"audits", "plans", "adr", "adrs", "changelog", "incidents",
+                    "proposals", "records", "audit", "plan"}
+RECORD_MARKERS = ("append-only", "append only", "record:", "this is a record")
+
+
+def is_record(doc_path, text: str) -> bool:
+    """Classify a doc as an append-only record (not a current-state source)."""
+    try:
+        parts = {part.lower() for part in Path(doc_path).parts}
+    except Exception:
+        parts = set()
+    if parts & RECORD_PATH_PARTS:
+        return True
+    name = Path(doc_path).name.lower()
+    if re.match(r"^\d{4}[-_]", name):
+        return True
+    low = text.lower()
+    return any(m in low for m in RECORD_MARKERS)
+
+
 def norm(text: str) -> str:
     text = re.sub(r"[`*'\u2019\"]", "", text.lower())
     return re.sub(r"\s+", " ", text)
@@ -331,10 +351,12 @@ def present(corpus: str, value: str, kind: str) -> bool:
 
 def parse_args(argv: list[str]):
     paths: list[str] = []
-    quiet, kinds = False, None
+    quiet, kinds, force = False, None, False
     for arg in argv[1:]:
         if arg == "--quiet":
             quiet = True
+        elif arg == "--force":
+            force = True
         elif arg.startswith("--kinds="):
             kinds = [k.strip() for k in arg.split("=", 1)[1].split(",") if k.strip()]
             if not kinds or any(k not in KINDS for k in kinds):
@@ -343,16 +365,16 @@ def parse_args(argv: list[str]):
             return None
         else:
             paths.append(arg)
-    return (paths, quiet, kinds) if len(paths) == 2 else None
+    return (paths, quiet, kinds, force) if len(paths) == 2 else None
 
 
 def diff_main(argv: list[str]) -> int:
     parsed = parse_args(argv)
     if parsed is None:
-        print("usage: fact-diff.py <doc> <skill-dir-or-SKILL.md-or-dir> [--kinds=a,b] [--quiet]\n"
+        print("usage: fact-diff.py <doc> <skill-dir-or-SKILL.md-or-dir> [--kinds=a,b] [--quiet] [--force]\n"
               f"kinds: {', '.join(KINDS)}", file=sys.stderr)
         return 2
-    (doc_arg, target_arg), quiet, kinds = parsed
+    (doc_arg, target_arg), quiet, kinds, force = parsed
 
     doc, target = Path(doc_arg), Path(target_arg)
     for p in (doc, target):
@@ -361,6 +383,10 @@ def diff_main(argv: list[str]) -> int:
             return 2
 
     doc_text = doc.read_text(errors="ignore")
+    if is_record(doc, doc_text) and not force:
+        print(f"note: {doc} classified as append-only record; skipping fact-diff "
+              f"(use --force to override)", file=sys.stderr)
+        return 0
     secrets = secret_lines(doc_text)
     for number, kind in secrets:
         print(f"warning: possible secret ({kind}) at {doc}:{number}", file=sys.stderr)
