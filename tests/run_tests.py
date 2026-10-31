@@ -288,8 +288,8 @@ def secret_checks() -> list[str]:
             failures.append(f"secrets: value leaked into output: {leaked[:6]}...")
     if parse_facts(out):
         failures.append(f"secrets: flagged lines must be left out of the fact checks, got {parse_facts(out)}")
-    if rc != 0:
-        failures.append(f"secrets: expected exit 0 with only secret lines, got {rc}\n{out}{err}")
+    if rc != 3:
+        failures.append(f"secrets: expected exit 3 when secrets present, got {rc}\n{out}{err}")
     return failures
 
 

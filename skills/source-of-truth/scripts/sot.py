@@ -114,6 +114,13 @@ SECRET_PATTERNS = (
 )
 
 
+def first_line_number(text: str, value: str) -> int:
+    nv = norm(value)
+    for number, line in enumerate(text.splitlines(), 1):
+        if value in line or nv in norm(line):
+            return number
+    return 1
+
 def norm(text: str) -> str:
     text = re.sub(r"[`*'\u2019\"]", "", text.lower())
     return re.sub(r"\s+", " ", text)
@@ -379,10 +386,16 @@ def diff_main(argv: list[str]) -> int:
     if not quiet:
         for kind, value in missing:
             print(f"{kind:<8} {value}")
+            print(f"note: {kind} {value} at {doc}:{first_line_number(doc_text, value)}",
+                  file=sys.stderr)
 
     if missing:
         print(f"missing facts: {len(missing)} of {total} checked")
         return 1
+
+    if secrets:
+        print(f"secret warnings: {len(secrets)} (exit 3)")
+        return 3
 
     print(f"no missing facts detected ({total} checked)")
     return 0
