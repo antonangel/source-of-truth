@@ -646,6 +646,253 @@ def self_inventory_checks() -> list[str]:
     return failures
 
 
+# --------------------------------------------------------------------------- v1.6 verbs
+
+LEGACY = HERE / "fixtures" / "legacy-tree"
+LEGACY_EXPECTED = {
+    ("info", "docs/adr/0001-choice.md"),
+    ("fail", "docs/authority-a.md"),
+    ("fail", "docs/derived-hand.md"),
+    ("fail", "docs/nav-dead.md"),
+    ("info", "docs/plain.md"),
+    ("fail", "docs/stub.md"),
+}
+
+
+def sot(*args, cwd, script=None):
+    return subprocess.run([sys.executable, str(script or SCRIPT), *args], cwd=cwd,
+                          capture_output=True, text=True)
+
+
+def git(*args, cwd):
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+
+def new_repo(tmp: Path, scripts: bool = False) -> Path:
+    repo = Path(tmp) / "repo"
+    (repo / "docs").mkdir(parents=True)
+    git("init", "-q", "-b", "main", cwd=repo)
+    git("config", "user.email", "t@example.com", cwd=repo)
+    git("config", "user.name", "t", cwd=repo)
+    if scripts:
+        shutil.copytree(SCRIPT.parent, repo / "skills" / "source-of-truth" / "scripts",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    return repo
+
+
+def _findings(stdout: str) -> set[tuple[str, str]]:
+    out = set()
+    for line in stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] in ("fail", "info"):
+            out.add((parts[0], parts[1].split(":")[0]))
+    return out
+
+
+def check_checks() -> list[str]:
+    """The class rules fire where they should and stay silent where they should."""
+    failures = []
+    proc = sot("check", "--all", str(LEGACY), cwd=ROOT)
+    if proc.returncode != 1:
+        failures.append(f"legacy-tree: expected exit 1, got {proc.returncode}\n{proc.stdout}")
+    found = _findings(proc.stdout)
+    if found != LEGACY_EXPECTED:
+        failures.append(f"legacy-tree findings: missing {sorted(LEGACY_EXPECTED - found)}; "
+                        f"unexpected {sorted(found - LEGACY_EXPECTED)}\n{proc.stdout}")
+    for quiet in ("derived-ok", "nav-ok", "procedural.md", "record.md"):
+        if quiet in proc.stdout:
+            failures.append(f"legacy-tree: {quiet} should produce no finding\n{proc.stdout}")
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        repo = new_repo(Path(tmp))
+        (repo / "docs" / "bare.md").write_text("# no class\n")
+        warn = sot("check", "--all", cwd=repo)
+        strict = sot("check", "--all", "--strict", cwd=repo)
+        if warn.returncode != 0:
+            failures.append(f"undeclared class must not fail by default: exit {warn.returncode}")
+        if strict.returncode != 1:
+            failures.append(f"--strict must fail an info-tier finding: exit {strict.returncode}")
+        if warn.stdout != strict.stdout:
+            failures.append("--strict changed the output, not just the exit code")
+
+        (repo / "docs" / "gen.md").write_text("---\nclass: derived\n---\n# hand written\n")
+        proc = sot("check", "--all", cwd=repo)
+        if "not provably generated" not in proc.stdout:
+            failures.append("a hand-written derived document must fail outside a work tree too")
+        (repo / "docs" / "gen.md").write_text("---\nclass: derived\n---\nGenerated: x\n# ok\n")
+        if "docs/gen.md" in sot("check", "--all", cwd=repo).stdout:
+            failures.append("a stamped derived document must pass")
+
+        (repo / "docs" / "leak.md").write_text("---\nclass: procedural\n---\ntoken: ghp_"
+                                               "abcdefghijklmnopqrstuvwxyz0123\n")
+        proc = sot("check", "--all", cwd=repo)
+        if proc.returncode != 3:
+            failures.append(f"secret-shaped content must exit 3, got {proc.returncode}")
+        if "ghp_" in proc.stdout or "ghp_" in proc.stderr:
+            failures.append("the secret value was printed")
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        plain = Path(tmp) / "notgit"
+        (plain / "docs").mkdir(parents=True)
+        (plain / "docs" / "x.md").write_text("---\nclass: procedural\n---\n")
+        if sot("check", cwd=plain).returncode != 2:
+            failures.append("check outside a work tree must exit 2, not report clean")
+        (plain / "docs" / "hand.md").write_text("---\nclass: derived\n---\n# hand written\n")
+        proc = sot("check", "--all", cwd=plain)
+        if proc.returncode != 1 or "not provably generated" not in proc.stdout:
+            failures.append("outside a work tree a hand-written derived document must fail, not pass: "
+                            "git check-ignore exits 0 when there is no repository")
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        repo = new_repo(Path(tmp))
+        (repo / "docs" / "old-bad.md").write_text("---\nclass: notes\n---\n")
+        (repo / "docs" / "touched.md").write_text("---\nclass: procedural\n---\nok\n")
+        git("add", "-A", cwd=repo)
+        git("commit", "-qm", "init", cwd=repo)
+        (repo / "docs" / "touched.md").write_text("---\nclass: procedural\n---\nchanged\n")
+        proc = sot("check", cwd=repo)
+        if "old-bad" in proc.stdout:
+            failures.append("an untouched document must never be failed by the default scope")
+        if "main..working tree" not in proc.stderr:
+            failures.append(f"the chosen git base must be printed: {proc.stderr!r}")
+    return failures
+
+
+def init_checks() -> list[str]:
+    """init writes only what is absent, never AGENTS.md, and resolves its own path."""
+    failures = []
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        repo = new_repo(Path(tmp), scripts=True)
+        rel = "skills/source-of-truth/scripts/sot.py"
+        before = git("status", "--porcelain", cwd=repo).stdout
+        proc = sot("init", "--print", cwd=repo, script=rel)
+        if proc.returncode != 0:
+            failures.append(f"init --print exited {proc.returncode}\n{proc.stderr}")
+        if git("status", "--porcelain", cwd=repo).stdout != before:
+            failures.append("init --print wrote to the working tree")
+        if str(repo) in proc.stdout:
+            failures.append("init --print leaked an absolute path for a script inside the repo")
+        if rel not in proc.stdout:
+            failures.append("init --print did not use the path relative to the git root")
+
+        proc = sot("init", cwd=repo, script=rel)
+        written = sorted(p.name for p in repo.rglob("*") if p.is_file() and ".git" not in p.parts)
+        for name in ("doc-classes.md", "adr.md", "runbook.md", ".sotignore"):
+            if not any(written_path.endswith(name) for written_path in written):
+                failures.append(f"init did not write {name}: {written}")
+        if (repo / "AGENTS.md").exists():
+            failures.append("init created AGENTS.md; it must only print the block")
+
+        again = sot("init", cwd=repo, script=rel)
+        if again.returncode != 0 or again.stdout.count("skip (exists)") != 4:
+            failures.append(f"second init must skip four files: {again.stdout}")
+
+        (repo / ".sotignore").write_text("hand edited\n")
+        sot("init", "--force", cwd=repo, script=rel)
+        if (repo / ".sotignore").read_text() == "hand edited\n":
+            failures.append("--force did not restore a file it owns")
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        plain = Path(tmp) / "notgit"
+        plain.mkdir()
+        if sot("init", cwd=plain).returncode != 2:
+            failures.append("init outside a work tree must exit 2")
+    return failures
+
+
+def audit_checks() -> list[str]:
+    """audit ranks, never judges, and every command it emits runs."""
+    failures = []
+    proc = sot("audit", str(LEGACY), cwd=ROOT)
+    if proc.returncode != 0:
+        failures.append(f"audit must exit 0 on a tree with findings, got {proc.returncode}")
+    if "| class | facts | inbound | candidate | command | verdict |" not in proc.stdout:
+        failures.append("audit is missing its row header")
+    rows = [line for line in proc.stdout.splitlines() if line.startswith("| ") and "---" not in line]
+    if len(rows) < 2:
+        failures.append(f"audit produced no rows\n{proc.stdout}")
+    if "skipped (record)" not in proc.stdout:
+        failures.append("audit did not skip a record document")
+    if "skipped (stub)" not in proc.stdout:
+        failures.append("audit did not skip a stub")
+
+    commands = re.findall(r"`(python3 [^`]+)`", proc.stdout)
+    for command in commands:
+        args = command.split()
+        if args[0] != "python3":
+            continue
+        done = subprocess.run([sys.executable, *args[1:]], cwd=ROOT, capture_output=True, text=True)
+        if done.returncode not in (0, 1):
+            failures.append(f"audit emitted a command that cannot run ({done.returncode}): {command}")
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        repo = new_repo(Path(tmp))
+        (repo / "docs" / "a.md").write_text("---\nclass: procedural\n---\nport 8080\n")
+        (repo / "config").mkdir()
+        (repo / "config" / "compose.yml").write_text("ports:\n  - \"8080:80\"\n")
+        before = set(p.name for p in repo.iterdir())
+        proc = sot("audit", cwd=repo)
+        if proc.returncode != 0:
+            failures.append(f"audit exited {proc.returncode}")
+        if set(p.name for p in repo.iterdir()) != before:
+            failures.append("audit wrote to the repository without --out")
+        out = repo / "plan.md"
+        proc = sot("audit", "--out", str(out), cwd=repo)
+        if not out.exists() or str(out) not in proc.stdout:
+            failures.append("audit --out did not write the plan or name it")
+        top = sot("audit", "--top", "1", cwd=repo)
+        if "showing 1 of" not in top.stdout:
+            failures.append(f"audit --top did not report the cap: {top.stdout[:200]}")
+    return failures
+
+
+def hook_checks() -> list[str]:
+    """The hook blocks a staged violation, ignores an unstaged one, and never eats a commit."""
+    failures = []
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        repo = new_repo(Path(tmp), scripts=True)
+        rel = "skills/source-of-truth/scripts/sot.py"
+        proc = sot("init", "--hook", cwd=repo, script=rel)
+        hook = repo / ".git" / "hooks" / "pre-commit"
+        if proc.returncode != 0 or not hook.exists():
+            failures.append(f"init --hook did not install a hook: {proc.stderr}")
+        elif not hook.stat().st_mode & 0o111:
+            failures.append("the installed hook is not executable")
+
+        (repo / "docs" / "bare.md").write_text("# no class\n")
+        git("add", "docs/bare.md", cwd=repo)
+        blocked = git("commit", "-m", "bare", cwd=repo)
+        if blocked.returncode == 0:
+            failures.append("a staged undeclared document did not block the commit")
+
+        (repo / "docs" / "bare.md").write_text("---\nclass: procedural\n---\n# ok\n")
+        git("add", "docs/bare.md", cwd=repo)
+        if git("commit", "-m", "bare", cwd=repo).returncode != 0:
+            failures.append("adding a class did not let the same commit through")
+
+        (repo / "docs" / "unstaged.md").write_text("# undeclared, never staged\n")
+        (repo / "docs" / "ok.md").write_text("---\nclass: procedural\n---\n")
+        git("add", "docs/ok.md", cwd=repo)
+        if git("commit", "-m", "ok", cwd=repo).returncode != 0:
+            failures.append("an unstaged violation blocked the commit; staged-only must hold")
+
+        again = sot("init", "--hook", cwd=repo, script=rel)
+        if "skip (managed)" not in again.stdout:
+            failures.append("re-running init --hook over its own hook is not idempotent")
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        repo = new_repo(Path(tmp), scripts=True)
+        (repo / ".git" / "hooks").mkdir(parents=True, exist_ok=True)
+        mine = repo / ".git" / "hooks" / "pre-commit"
+        mine.write_text("#!/bin/sh\necho mine\n")
+        proc = sot("init", "--hook", cwd=repo, script="skills/source-of-truth/scripts/sot.py")
+        if proc.returncode != 2:
+            failures.append(f"an unmanaged hook must be refused with exit 2, got {proc.returncode}")
+        if mine.read_text() != "#!/bin/sh\necho mine\n":
+            failures.append("an unmanaged hook was overwritten")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
     passed = 0
@@ -682,7 +929,9 @@ def main() -> int:
                          ("real-world noise", noise_checks), ("masking safety", masking_checks),
                          ("profiles", profile_checks),
                          ("pointer paths", pointer_checks), ("inventory speed", perf_checks),
-                         ("version agreement", version_checks), ("self inventory", self_inventory_checks)):
+                         ("version agreement", version_checks), ("self inventory", self_inventory_checks),
+                         ("init", init_checks), ("check", check_checks),
+                         ("audit", audit_checks), ("pre-commit hook", hook_checks)):
         found_failures = check()
         failures.extend(found_failures)
         if not found_failures:
