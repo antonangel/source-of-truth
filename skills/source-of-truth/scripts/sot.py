@@ -62,8 +62,8 @@ if _HERE not in sys.path:
 from sotassets import OWNED, agents_block, ci_snippet
 from sotlib import (
     EXIT_CLEAN, EXIT_MISSING, EXIT_SECRET, EXIT_USAGE, KINDS, PROFILES,
-    census, check_docs, check_scope, extract, find_ports, inbound_counts, is_pointer,
-    is_record, load_ignore, pointer_needles, present, secret_lines, skill_corpus,
+    audit_rows, census, check_docs, check_scope, extract, find_ports, inbound_counts,
+    is_pointer, is_record, load_ignore, pointer_needles, present, secret_lines, skill_corpus,
 )
 
 
@@ -222,6 +222,96 @@ def inventory_main(argv: list[str]) -> int:
           f"{orphans} with no inbound references")
     if top and len(rows) > top:
         print(f"(showing {top} of {len(rows)}; sorted by facts stated)")
+    return EXIT_CLEAN
+
+
+AUDIT_USAGE = "usage: sot.py audit [repo-dir] [--out PATH] [--top N]"
+
+
+def parse_audit_args(argv: list[str]):
+    args, out, top = [], None, None
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--out" or arg == "--top":
+            if index + 1 >= len(argv):
+                return None
+            value = argv[index + 1]
+            if arg == "--out":
+                out = value
+            else:
+                try:
+                    top = int(value)
+                except ValueError:
+                    return None
+            index += 2
+            continue
+        if arg.startswith("--out="):
+            out = arg.split("=", 1)[1]
+        elif arg.startswith("--top="):
+            try:
+                top = int(arg.split("=", 1)[1])
+            except ValueError:
+                return None
+        elif arg.startswith("--"):
+            return None
+        else:
+            args.append(arg)
+        index += 1
+    if len(args) > 1:
+        return None
+    return (Path(args[0]) if args else Path(".")), out, top
+
+
+def _audit_ref(root: Path) -> str:
+    top = _git("rev-parse", "--show-toplevel", cwd=root)
+    return _script_ref(Path(top)) if top else "sot.py"
+
+
+def render_plan(root: Path, rows, summary: dict[str, int], top: int | None, total: int) -> str:
+    lines = [
+        f"# Docs audit: {root}  ({time.strftime('%Y-%m-%d')})",
+        "",
+        "Ranked by class, then inbound references, then facts stated. A candidate is a candidate: "
+        "run the command rather than trusting the column.",
+        "",
+    ]
+    if top and total > top:
+        lines.extend([f"showing {top} of {total}", ""])
+    lines.append("| class | facts | inbound | candidate | command | verdict |")
+    lines.append("|---|---|---|---|---|---|")
+    for row in rows:
+        command = f"`{row.command}`" if row.command != "-" else "-"
+        lines.append(f"| {row.cls} | {row.facts} | {row.inbound} | {row.candidate} | "
+                     f"{command} | {row.verdict} |")
+    lines.append("")
+    lines.append(f"{total} documents, {summary['paired']} paired, {summary['stubs']} stubs, "
+                 f"{summary['records']} records.")
+    return "\n".join(lines) + "\n"
+
+
+def audit_main(argv: list[str]) -> int:
+    parsed = parse_audit_args(argv)
+    if parsed is None:
+        print(AUDIT_USAGE, file=sys.stderr)
+        return EXIT_USAGE
+    root, out, top = parsed
+    if not root.is_dir():
+        print(f"not a directory: {root}", file=sys.stderr)
+        return EXIT_USAGE
+
+    rows, summary = audit_rows(root, _audit_ref(root))
+    shown = rows[:top] if top else rows
+    plan = render_plan(root, shown, summary, top, len(rows))
+    if out:
+        target = Path(out)
+        if not target.parent.is_dir():
+            print(f"no such directory: {target.parent}", file=sys.stderr)
+            return EXIT_USAGE
+        target.write_text(plan)
+        print(f"wrote {out}")
+    else:
+        print(plan, end="")
     return EXIT_CLEAN
 
 
@@ -434,6 +524,7 @@ def init_main(argv: list[str]) -> int:
 USAGE = """usage:
   sot.py init [repo-dir] [--print] [--hook] [--force]
   sot.py check [repo-dir] [--staged] [--all] [--strict]
+  sot.py audit [repo-dir] [--out PATH] [--top N]
   sot.py inventory [repo-dir] [--top=N]
   sot.py diff <doc.md> <skill-dir | SKILL.md | config-dir> [--profile=skill|config]
               [--kinds=KINDS] [--all] [--quiet] [--force]
@@ -441,6 +532,7 @@ USAGE = """usage:
 init installs the document contract and prints the two blocks it will not write.
 check reports structural findings for changed documents (default), the index (--staged) or the
 whole repository (--all); --strict promotes info-tier findings to a failure.
+audit emits a ranked worklist, one row per document, and never a verdict.
 inventory censuses a repository. diff compares one document against one selected target.
 Exit codes: 0 clean, 1 findings, 2 usage, 3 secret-shaped content."""
 
@@ -450,6 +542,8 @@ def main(argv: list[str]) -> int:
         return init_main([argv[0]] + argv[2:])
     if len(argv) > 1 and argv[1] == "check":
         return check_main([argv[0]] + argv[2:])
+    if len(argv) > 1 and argv[1] == "audit":
+        return audit_main([argv[0]] + argv[2:])
     if len(argv) > 1 and argv[1] == "inventory":
         return inventory_main([argv[0]] + argv[2:])
     if len(argv) > 1 and argv[1] == "diff":

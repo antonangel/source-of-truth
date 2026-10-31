@@ -822,3 +822,107 @@ def check_docs(root: Path, paths: list[str] | None) -> tuple[list[Finding], list
     return findings, secrets
 
 
+# --------------------------------------------------------------------------- audit
+
+AuditRow = namedtuple("AuditRow", "cls facts inbound candidate command verdict")
+
+CLASS_ORDER = {name: index for index, name in enumerate(DOC_CLASSES)}
+
+
+def _dir_corpus(path: Path, patterns: list[str], budget: int = 4_000_000) -> str:
+    """Concatenated text of one candidate target directory, pruned like the census."""
+    if not path.is_dir():
+        return ""
+    chunks: list[str] = []
+    size = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = sorted(d for d in dirnames
+                             if d.lower() not in SKIP_DIRS and not ignored_name(d, patterns))
+        for name in sorted(filenames):
+            if Path(name).suffix.lower() not in TEXT_EXT:
+                continue
+            file_path = Path(dirpath) / name
+            rel = file_path.relative_to(path).as_posix()
+            if ignored_path(rel, name, patterns):
+                continue
+            try:
+                if file_path.stat().st_size > MAX_FILE:
+                    continue
+                text = file_path.read_text(errors="ignore")
+            except OSError:
+                continue
+            chunks.append(text)
+            size += len(text)
+            if size > budget:
+                return "\n".join(chunks)
+    return "\n".join(chunks)
+
+
+def _candidate_dirs(root: Path) -> list[str]:
+    """Each top-level directory, then the repo root.
+
+    A `diff` target must be a directory. Specific directories come first so that a tie with the
+    root — which contains everything — resolves to the narrower, more useful target.
+    """
+    out: list[str] = []
+    for entry in sorted(root.iterdir()):
+        if (entry.is_dir() and not entry.name.startswith(".")
+                and entry.name.lower() not in SKIP_DIRS):
+            out.append(entry.name)
+    out.append(".")
+    return out
+
+
+def audit_rows(root: Path, script_ref: str) -> tuple[list[AuditRow], dict[str, int]]:
+    """One row per document, ranked. Never a verdict: every row carries the command to check it."""
+    patterns = load_ignore(root)
+    dir_map = load_dir_map(root)
+    docs = census(root, patterns)
+    counts = inbound_counts(docs)
+
+    candidates = _candidate_dirs(root)
+    cand_facts = {c: extract(_dir_corpus(root / c, patterns)) for c in candidates}
+
+    rows: list[AuditRow] = []
+    summary = {"records": 0, "stubs": 0, "paired": 0}
+
+    for rel in sorted(docs):
+        path, text = docs[rel]
+        cls = classify(rel, text, dir_map) or "undeclared"
+        facts = extract(text)
+        total = sum(len(values) for values in facts.values())
+        inbound = counts.get(rel, 0)
+
+        if cls == "record" or is_record(path, text):
+            summary["records"] += 1
+            rows.append(AuditRow(cls, total, inbound, "-", "-", "skipped (record)"))
+            continue
+        if frontmatter(text).get("canonical"):
+            summary["stubs"] += 1
+            rows.append(AuditRow(cls, total, inbound, "-", "-", "skipped (stub)"))
+            continue
+
+        own = rel.split("/", 1)[0] if "/" in rel else "."
+        best, best_score = "-", 0
+        for candidate, cand in cand_facts.items():
+            if candidate == own:
+                continue
+            score = sum(1 for kind, values in facts.items()
+                        for value in values if value in cand.get(kind, {}))
+            if score > best_score:
+                best, best_score = candidate, score
+
+        if best == "-":
+            rows.append(AuditRow(cls, total, inbound, "-", "-", "no candidate"))
+            continue
+
+        command = f"python3 {script_ref} diff {rel} {best} --profile=config"
+        summary["paired"] += 1
+        rows.append(AuditRow(cls, total, inbound, best, command, ""))
+
+    rows.sort(key=lambda r: (r.verdict != "",
+                             CLASS_ORDER.get(r.cls, len(CLASS_ORDER)),
+                             -r.inbound, -r.facts, r.command))
+    return rows, summary
+
+
