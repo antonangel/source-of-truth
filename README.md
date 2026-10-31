@@ -58,7 +58,7 @@ Fact kinds: `path`, `host`, `ip`, `port`, `env`, `id`, `command`.
 
 ## Measured
 
-One homelab, 889 docs: 304 that nothing links to, 113 holding something secret-looking, about 7 seconds. Run it on your own repo; one repository measured once is a data point, not a benchmark.
+One homelab, 889 docs: 304 that nothing links to, 113 holding something secret-looking, 7.2s and 8.7s on two runs. Run it on your own repo; one repository measured once is a data point, not a benchmark.
 
 ## Limits
 
