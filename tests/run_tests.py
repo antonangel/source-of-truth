@@ -12,11 +12,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-SCRIPT = ROOT / "skills" / "source-of-truth" / "scripts" / "fact-diff.py"
+SCRIPT = ROOT / "skills" / "source-of-truth" / "scripts" / "sot.py"
 KINDS = {"path", "host", "ip", "port", "env", "id", "command"}
 
 # (name, doc text, {skill-relative-path: content}, expected {(kind, value)})
@@ -244,16 +245,20 @@ def run_script(doc_text: str, files: dict[str, str], skill_name: str = "skill",
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), str(doc), str(skill), *extra],
+            [sys.executable, str(SCRIPT), "diff", str(doc), str(skill), *extra],
             capture_output=True, text=True,
         )
     return proc.returncode, proc.stdout, proc.stderr
 
 
 def parse_facts(stdout: str) -> set[tuple[str, str]]:
+    """Read `kind`, `value`, `doc:line` lines. The provenance field is the last token."""
     found = set()
     for line in stdout.splitlines():
-        parts = line.split(None, 1)
+        head, _, provenance = line.rpartition("  ")
+        if not provenance or ":" not in provenance:
+            continue
+        parts = head.split(None, 1)
         if len(parts) == 2 and parts[0] in KINDS:
             found.add((parts[0], parts[1].strip()))
     return found
@@ -310,7 +315,6 @@ def kinds_checks() -> list[str]:
 
 
 def inventory_checks() -> list[str]:
-    inventory = SCRIPT.parent / "doc-inventory.py"
     failures = []
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -324,7 +328,7 @@ def inventory_checks() -> list[str]:
         for rel, content in files.items():
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text(content)
-        proc = subprocess.run([sys.executable, str(inventory), str(root)],
+        proc = subprocess.run([sys.executable, str(SCRIPT), "inventory", str(root)],
                               capture_output=True, text=True)
     rows = {}
     for line in proc.stdout.splitlines():
@@ -356,11 +360,11 @@ GOLDEN_VS_SKILL = {
 GOLDEN_DRIFT = {
     ("path", "/opt/example/dns"), ("host", "pihole.example.com"), ("ip", "10.0.0.1"), ("port", "8080"),
 }
-DRIFT_KINDS = "--kinds=path,host,ip,port,env,id"
+DRIFT_KINDS = "--profile=config"
 
 
 def run_in(cwd: Path, *args: str) -> tuple[int, str, str]:
-    proc = subprocess.run([sys.executable, str(SCRIPT), *args], cwd=cwd,
+    proc = subprocess.run([sys.executable, str(SCRIPT), "diff", *args], cwd=cwd,
                           capture_output=True, text=True)
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -390,7 +394,7 @@ def golden_checks() -> list[str]:
         (migrated / skill / "references").mkdir()
         (migrated / skill / "references" / "dns-runbook.md").write_text(scrubbed)
         rc, out_after, err_after = run_in(migrated, doc, skill)
-    real_err = "\\n".join(l for l in err_after.splitlines() if "deprecated" not in l.lower())
+    real_err = err_after
     if rc != 0 or real_err.strip():
         failures.append(f"golden after migration: expected clean exit 0, got rc={rc}\n{out_after}{err_after}")
 
@@ -440,8 +444,160 @@ def readme_checks() -> list[str]:
     return failures
 
 
+NOISE = HERE / "fixtures" / "real-world-noise"
+NOISE_EXPECTED = {
+    ("path", "/opt/stack/compose.yaml"),
+    ("path", "~/.config/sot/keys.txt"),
+    ("host", "edge.example.net"),
+    ("ip", "10.0.0.1"),
+    ("ip", "127.0.0.1"),
+    ("ip", "203.0.113.10"),
+    ("port", "22"),
+    ("port", "53"),
+    ("port", "80"),
+    ("port", "5432"),
+    ("port", "8080"),
+    ("id", "9f2c4b7a1d3e5f60"),
+}
+NOISE_BANNED = {("port", v) for v in ("404", "30", "90", "10", "2026", "569", "1400", "100",
+                                     "2001")}
+
+
+def noise_checks() -> list[str]:
+    """A document shaped like a real system reference must produce no invented facts."""
+    failures = []
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "target"
+        target.mkdir()
+        (target / "SKILL.md").write_text("Nothing here.\n")
+        proc = subprocess.run([sys.executable, str(SCRIPT), "diff",
+                               str(NOISE / "doc.md"), str(target)],
+                              capture_output=True, text=True)
+    found = parse_facts(proc.stdout)
+    if found != NOISE_EXPECTED:
+        invented = found - NOISE_EXPECTED
+        absent = NOISE_EXPECTED - found
+        failures.append(f"noise: invented {sorted(invented)}; missed {sorted(absent)}\n{proc.stdout}")
+    if found & NOISE_BANNED:
+        failures.append(f"noise: junk facts survived: {sorted(found & NOISE_BANNED)}")
+    if "suppressed" not in proc.stderr:
+        failures.append(f"noise: suppression must be reported on stderr\n{proc.stderr}")
+    if proc.returncode != 1:
+        failures.append(f"noise: expected exit 1, got {proc.returncode}")
+    return failures
+
+
+def masking_checks() -> list[str]:
+    """The masking that removes junk must never hide the fact it was protecting."""
+    rc, found, out = run_case("The bastion IP is 203.0.113.10.\n", {"SKILL.md": "Nothing here.\n"})
+    if rc != 1 or found != {("ip", "203.0.113.10")}:
+        return [f"masking: a real IP must survive suppression, got {sorted(found)} rc={rc}\n{out}"]
+    return []
+
+
+def profile_checks() -> list[str]:
+    doc = "Node 10.0.0.5 at postgres:5432.\n\n```bash\nsystemctl restart foo\n```\n"
+    files = {"SKILL.md": "Nothing here.\n"}
+    failures = []
+    _, out, _ = run_script(doc, files, extra=("--profile=config",))
+    leaked = {k for k, _ in parse_facts(out)} & {"id", "command"}
+    if leaked:
+        failures.append(f"--profile=config leaked {sorted(leaked)}: {sorted(parse_facts(out))}")
+    rc, _, _ = run_script(doc, files, extra=("--profile=bogus",))
+    if rc != 2:
+        failures.append(f"--profile=bogus: expected exit 2, got {rc}")
+    _, out, _ = run_script(doc, files, extra=("--kinds=port",))
+    if parse_facts(out) != {("port", "5432")}:
+        failures.append(f"--kinds=port override: {sorted(parse_facts(out))}")
+    return failures
+
+
+def pointer_checks() -> list[str]:
+    """A doc pointing at its replacement by absolute path is not drifted."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "skills" / "network-ops"
+        target.mkdir(parents=True)
+        (target / "SKILL.md").write_text("Nothing.\n")
+        doc = Path(tmp) / "doc.md"
+        doc.write_text(f"Moved to {target}/references/runbook.md.\n")
+        proc = subprocess.run([sys.executable, str(SCRIPT), "diff", str(doc), str(target)],
+                              capture_output=True, text=True)
+    if proc.returncode != 0:
+        return [f"pointer: absolute path to the target reported as missing\n{proc.stdout}{proc.stderr}"]
+    return []
+
+
+def perf_checks() -> list[str]:
+    """Inventory must stay linear: 600 docs plus a data directory, inside a budget."""
+    failures = []
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "docs").mkdir()
+        filler = ("A paragraph of prose that stands in for a runbook body. " * 40) + "\n"
+        count = 600
+        for i in range(count):
+            nxt = f"docs/d{i + 1:04d}.md" if i + 1 < count else ""
+            (root / "docs" / f"d{i:04d}.md").write_text(f"# Doc {i}\n{filler}See {nxt}.\n")
+        (root / "docker" / "data").mkdir(parents=True)
+        (root / "docker" / "data" / "blob.txt").write_text("x" * 10_000)
+        started = time.time()
+        proc = subprocess.run([sys.executable, str(SCRIPT), "inventory", str(root)],
+                              capture_output=True, text=True)
+        elapsed = time.time() - started
+    if proc.returncode != 0:
+        failures.append(f"perf: inventory failed rc={proc.returncode}\n{proc.stderr}")
+        return failures
+    if elapsed > 15:
+        failures.append(f"perf: inventory took {elapsed:.1f}s for {count} docs; budget is 15s")
+    if f"{count} docs" not in proc.stdout:
+        failures.append(f"perf: expected {count} docs in the summary\n{proc.stdout[-400:]}")
+    if "blob.txt" in proc.stdout:
+        failures.append("perf: application data was censused")
+    if "1 with no inbound references" not in proc.stdout:
+        failures.append(f"perf: expected exactly one orphan\n{proc.stdout[-300:]}")
+    return failures
+
+
+def version_checks() -> list[str]:
+    """The version in the skill and the changelog are the same fact; they may not disagree."""
+    skill = (ROOT / "skills" / "source-of-truth" / "SKILL.md").read_text()
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    v_skill = re.search(r"^version:\s*([0-9]+\.[0-9]+\.[0-9]+)", skill, re.M)
+    v_log = re.search(r"^##\s*([0-9]+\.[0-9]+\.[0-9]+)", changelog, re.M)
+    if not v_skill or not v_log:
+        return ["version: could not read a version from SKILL.md or CHANGELOG.md"]
+    if v_skill.group(1) != v_log.group(1):
+        return [f"version: SKILL.md says {v_skill.group(1)}, CHANGELOG.md says {v_log.group(1)}"]
+    return []
+
+
+def self_inventory_checks() -> list[str]:
+    """CI proves the tool on this repository: it finishes, it honours .sotignore, and the only
+    documents allowed to carry something secret-shaped are the fixtures that demonstrate it."""
+    proc = subprocess.run([sys.executable, str(SCRIPT), "inventory", str(ROOT)],
+                          capture_output=True, text=True)
+    failures = []
+    if proc.returncode != 0:
+        return [f"self-inventory: exit {proc.returncode}\n{proc.stderr}"]
+    offenders = []
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 8 and parts[0].isdigit():
+            path, secrets = parts[7], int(parts[6])
+            if secrets and not path.startswith("tests/fixtures/"):
+                offenders.append(path)
+    if offenders:
+        failures.append(f"self-inventory: secrets outside the fixtures: {offenders}")
+    if ".scratch/" in proc.stdout:
+        failures.append("self-inventory: .sotignore was not honoured for .scratch/")
+    if "docs" not in proc.stdout.split("\n")[-2]:
+        failures.append(f"self-inventory: summary line missing\n{proc.stdout[-200:]}")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
+    passed = 0
 
     for name, doc, files, expected, *opt in CASES:
         rc, found, out = run_case(doc, files, **(opt[0] if opt else {}))
@@ -459,6 +615,7 @@ def main() -> int:
             failures.append(f"{name}: {'; '.join(detail)}\n{out}")
         else:
             print(f"PASS {name}")
+            passed += 1
 
     rc, found, out = run_case(SMOKE_DOC, {"SKILL.md": "Nothing here.\n"})
     if found != SMOKE_EXPECTED or rc != 1:
@@ -468,11 +625,17 @@ def main() -> int:
     else:
         print(f"PASS smoke flags {len(SMOKE_EXPECTED)} facts")
 
-    for label, check in (("secrets", secret_checks), ("--kinds", kinds_checks), ("inventory", inventory_checks), ("homelab golden", golden_checks), ("readme", readme_checks)):
+    for label, check in (("secrets", secret_checks), ("--kinds", kinds_checks),
+                         ("inventory", inventory_checks), ("homelab golden", golden_checks),
+                         ("readme", readme_checks), ("real-world noise", noise_checks),
+                         ("masking safety", masking_checks), ("profiles", profile_checks),
+                         ("pointer paths", pointer_checks), ("inventory speed", perf_checks),
+                         ("version agreement", version_checks), ("self inventory", self_inventory_checks)):
         found_failures = check()
         failures.extend(found_failures)
         if not found_failures:
             print(f"PASS {label}")
+            passed += 1
 
     if failures:
         print()
@@ -481,7 +644,7 @@ def main() -> int:
         print(f"\n{len(failures)} failure(s)")
         return 1
 
-    print(f"\n{len(CASES) + 6} check(s) passed")
+    print(f"\n{passed} check(s) passed")
     return 0
 
 

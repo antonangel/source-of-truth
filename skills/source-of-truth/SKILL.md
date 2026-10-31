@@ -1,7 +1,7 @@
 ---
 name: source-of-truth
 description: "Use when homelab docs need auditing or cleanup: a stale runbook, AGENTS.md or CLAUDE.md that disagrees with compose or config, a doc duplicated by a skill, runbooks holding secrets, or consolidating docs into skills. Gives each fact one home and gates stubbing with a fact-diff."
-version: 1.2.0
+version: 1.4.0
 license: MIT
 ---
 
@@ -69,8 +69,9 @@ How to derive instead of hand-write: `references/sources-and-secrets.md`.
 
 ## Audit workflow
 
-1. **Inventory.** `python3 scripts/doc-inventory.py <repo>` lists each doc with size, age, inbound
-   references, fact counts and possible secrets. Survey everything; do not sample.
+1. **Inventory.** `python3 scripts/sot.py inventory <repo>` lists each doc with size, age, inbound
+   references, fact counts and possible secrets. It reads markdown only, prunes data and build
+   directories at the walk, and honours `.sotignore`. Survey everything; do not sample.
 2. **Classify** every doc: class, proper home, action. Leave records alone.
 3. **Secrets pass.** Any secret warning blocks that doc until it is scrubbed. Rotate anything that
    was ever committed or synced.
@@ -86,16 +87,28 @@ condense while moving: the summary deletes the command that mattered.
 
 ## Fact-diff, two uses
 
+Two profiles mean you do not have to remember which kinds belong to which mode.
+
 ```bash
 # Is the doc redundant with the skill? Exit 0 = nothing missing: necessary, not sufficient.
-python3 scripts/fact-diff.py docs/dns-runbook.md skills/network-ops
+python3 scripts/sot.py diff docs/dns-runbook.md skills/network-ops --profile=skill
 
-# Has the doc drifted from the config? Commands never live in config, so skip them.
-python3 scripts/fact-diff.py docs/dns-runbook.md /srv/stack --kinds=path,host,ip,port,env,id
+# Has the doc drifted from the config? A config dir holds no commands and no commit ids.
+python3 scripts/sot.py diff docs/dns-runbook.md /srv/stack --profile=config
 ```
 
-Exit 1 lists the missing facts. Secret warnings go to stderr; read both. In drift mode a missing
-fact is stale, or lives outside that directory: decide, do not auto-fix.
+`--profile=skill` checks all seven kinds. `--profile=config` checks path, host, ip, port and env
+only, because a config directory cannot hold a command line or a container id, and reporting those
+as missing is drift that does not exist. `--kinds=a,b` overrides either profile.
+
+Exit codes: `0` clean, `1` missing facts, `2` usage error, `3` the doc holds something that looks
+like a secret. Exit 1 lists the missing facts one per line, each with the `doc:line` it came from.
+
+**Precision beats recall.** A number that cannot be told apart from a status code, a clock or an
+IPv6 octet is suppressed, and the count of suppressed candidates is printed so a clean exit is
+never silent. Read that count; `--all` shows what was held back when you want to audit the
+classifier. In drift mode a missing fact is stale, or lives outside that directory: decide, do not
+auto-fix.
 
 ## Scope
 

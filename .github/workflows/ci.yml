@@ -1,4 +1,4 @@
-name: test
+name: ci
 
 on:
   push:
@@ -15,4 +15,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # The suite includes the golden fixtures, the real-world noise fixture, the 600-document
+      # inventory speed budget, and a self-inventory of this repository.
       - run: python3 tests/run_tests.py

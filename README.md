@@ -1,67 +1,69 @@
 # Source of Truth
 
-An agent skill for homelabs whose docs have started lying to the agent that reads them.
+Infrastructure knowledge integrity for AI agents and the people who operate infrastructure.
 
-Your runbook says one port and the compose file says another. `AGENTS.md` describes a service you
-retired. The same restore procedure lives in a doc and in a skill, and they disagree. Nobody can say
-which copy is current, so the agent picks one and builds on it.
+Documentation drifts. A runbook says one port and compose says another; `AGENTS.md` describes a
+service you retired; the same procedure lives in a doc and a skill and the two disagree. An agent
+still has to decide, and it may build on the wrong copy. This repository gives each class of fact
+one home, a deterministic check for what is mechanical, and a procedure for moving knowledge
+without losing any.
 
-## What it does
+## One home per fact class
 
-- Gives every fact one home: generated from config, an ADR, a glossary, a skill, or a pointer
-  ([classes and layer map](skills/source-of-truth/SKILL.md#classify-the-fact-then-place-it)).
-- Runs an audit that ends in a written plan you approve before anything moves
-  ([workflow](skills/source-of-truth/SKILL.md#audit-workflow)).
-- Checks nothing is lost: `sot.py diff` lists what a doc states that its replacement does not.
-- Catches drift from your config, such as a runbook that says 8080 where compose maps 8081.
-- Scrubs secrets before a doc is copied, and keeps recovery steps readable when the agent host is
-  down ([sources and secrets](skills/source-of-truth/references/sources-and-secrets.md)).
+| Information | Authoritative home |
+|---|---|
+| Current technical configuration | compose, Nix, proxy and DNS config |
+| Decisions and their rationale | ADRs |
+| Shared vocabulary | one glossary |
+| Operational procedure | agent skills |
+| Navigation | `AGENTS.md`, README |
+| History | append-only records, never rewritten |
 
-It never deletes a doc. The path survives as a pointer, so links keep working.
+A document may point at a fact owned elsewhere. It may not keep a second copy of it.
+
+## What ships
+
+- **The skill** — `skills/source-of-truth/SKILL.md`: classify, audit, plan, migrate, verify, and say when to stop for approval.
+- **The check** — `scripts/sot.py`: inventory a repository, or compare one doc against what should supersede it. Python 3.10+, standard library only.
 
 ## Install
 
 Claude Code:
-
 ```bash
 git clone https://github.com/antonangel/source-of-truth
 cp -r source-of-truth/skills/source-of-truth ~/.claude/skills/
 ```
 
-Other agents: copy the `skills/source-of-truth/` folder to wherever your agent loads skills from.
-Check its documentation for the directory.
+Other agents: copy `skills/source-of-truth/` wherever your agent loads skills from.
 
-## Try it
+## Try it on your own repo
 
-The repo bundles an invented homelab. From `tests/fixtures/example-stack`:
+Markdown only, data and build directories pruned, `.sotignore` honoured:
 
 ```bash
-python3 ../../../skills/source-of-truth/scripts/sot.py diff docs/dns-runbook.md skills/network-ops
-python3 ../../../skills/source-of-truth/scripts/sot.py diff docs/dns-runbook.md config --kinds=path,host,ip,port,env,id
+python3 skills/source-of-truth/scripts/sot.py inventory .
 ```
 
-The first shows what the doc holds that the skill lacks. The second finds the stale port. Full output
-and the migration that follows: [examples](skills/source-of-truth/references/examples.md).
+One row per doc: size, age, inbound links, facts stated, possible secrets. Most repos show orphans
+on the first run. Then compare a doc against the skill that should supersede it:
 
-## Scripts
+```bash
+python3 skills/source-of-truth/scripts/sot.py diff docs/runbook.md skills/some-skill --profile=skill
+```
 
-Python 3.10+, standard library only.
-
-- `scripts/sot.py inventory [repo]` (also `scripts/doc-inventory.py` shim): each doc with size,
-  age, inbound references, fact counts and possible secrets.
-- `scripts/sot.py diff <doc> <skill-or-config-dir> [--kinds=a,b]` (also `scripts/fact-diff.py`
-  shim): exit 0 when nothing is missing, 1 when facts are. Secret warnings go to stderr, by line,
-  never with the value.
-
+Each line is a fact the doc states, the skill lacks, and the line it came from. For drift rather
+than duplication use `--profile=config`, which drops commands and commit ids a config directory
+cannot hold.
 Fact kinds: `path`, `host`, `ip`, `port`, `env`, `id`, `command`.
 
-Run the tests with `python3 tests/run_tests.py`.
+## Measured
+
+One homelab, 889 docs: 304 that nothing links to, 113 holding something secret-looking, about 7 seconds. Run it on your own repo; one repository measured once is a data point, not a benchmark.
 
 ## Limits
 
 - Exit 0 is necessary, not sufficient: it compares facts, not usefulness. Read the pair.
-- Config keys, image names, IPv6 and MAC addresses are not extracted.
-- The secret scan is a tripwire for docs, not a history scanner.
-- Built for homelabs and small infra repos where an agent loads skills on demand.
+- Precision beats recall: an ambiguous number is suppressed and counted, never guessed at.
+- Config keys, image names, IPv6 and MAC addresses are not extracted, and the secret scan is a tripwire for docs rather than a history scanner.
 
 MIT licensed.
